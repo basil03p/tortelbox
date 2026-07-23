@@ -156,8 +156,21 @@ export function createApiClient(apiKey) {
     },
 
     async createWebDl({ url, name = '' }) {
-      const r = await client.post('/api/webdl/createwebdownload', { link: url, name });
-      return r.data;
+      const FormData = (await import('form-data')).default;
+      const form = new FormData();
+      if (url) form.append('link', url);
+      if (name) form.append('name', name);
+      try {
+        const r = await client.post('/api/webdl/createwebdownload', form, {
+          headers: form.getHeaders(),
+          timeout: 60000,
+        });
+        return r.data;
+      } catch (err) {
+        // Fallback to JSON payload if form-data returns error
+        const r = await client.post('/api/webdl/createwebdownload', { link: url, name }, { timeout: 60000 });
+        return r.data;
+      }
     },
 
     async controlWebDl(webdlId, operation) {

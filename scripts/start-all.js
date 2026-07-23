@@ -61,8 +61,15 @@ function startBotProcess() {
 startBotProcess();
 
 // ── 2. Spawn Next.js Web Application ────────────────────────
-console.log('🌐 Launching Next.js Web UI…');
-const nextProcess = spawn('npx', ['next', 'start'], {
+import fs from 'fs';
+const standalonePath = join(ROOT_DIR, '.next', 'standalone', 'server.js');
+const hasStandalone = fs.existsSync(standalonePath);
+
+const nextCmd = hasStandalone ? 'node' : 'npx';
+const nextArgs = hasStandalone ? ['.next/standalone/server.js'] : ['next', 'start'];
+
+console.log(`🌐 Launching Next.js Web UI (${nextCmd} ${nextArgs.join(' ')})…`);
+const nextProcess = spawn(nextCmd, nextArgs, {
   cwd: ROOT_DIR,
   stdio: 'inherit',
   env: { ...process.env },

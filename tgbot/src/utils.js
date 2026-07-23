@@ -86,6 +86,23 @@ export function escapeHtml(str) {
     .replace(/"/g, '&quot;');
 }
 
+export function extractApiError(err) {
+  if (!err) return 'Unknown error';
+  const data = err.response?.data;
+  if (data) {
+    if (typeof data.detail === 'string') return data.detail;
+    if (data.detail && typeof data.detail === 'object') {
+      return data.detail.message || data.detail.error || JSON.stringify(data.detail);
+    }
+    if (typeof data.error === 'string') return data.error;
+    if (data.error && typeof data.error === 'object') {
+      return data.error.message || JSON.stringify(data.error);
+    }
+    if (typeof data.message === 'string') return data.message;
+  }
+  return err.message || String(err);
+}
+
 export function escapeMarkdown(text) {
   return String(text || '')
     .replace(/\\/g, '\\\\')

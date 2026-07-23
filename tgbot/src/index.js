@@ -149,10 +149,26 @@ async function handleGetLink(bot, chatId, userId, type, itemId) {
   try {
     const api = createApiClient(apiKey);
     let result;
-    if (type === 'torrent') result = await api.requestTorrentDl(Number(itemId), null, true);
-    else if (type === 'usenet') result = await api.requestUsenetDl(Number(itemId), null, true);
-    else if (type === 'webdl') result = await api.requestWebDlDl(Number(itemId), null, true);
-    else { await bot.editMessageText('❌ Unknown type.', { chat_id: targetChat, message_id: loading.message_id }); return; }
+    if (type === 'torrent') {
+      const details = await api.getTorrentById(Number(itemId)).catch(() => null);
+      const items = details?.data;
+      const t = Array.isArray(items) ? items.find((x) => String(x.id) === String(itemId)) : items;
+      const files = Array.isArray(t?.files) ? t.files : [];
+      if (files.length === 1) {
+        result = await api.requestTorrentDl(Number(itemId), files[0]?.id ?? 0, false);
+      } else if (files.length > 1) {
+        result = await api.requestTorrentDl(Number(itemId), null, true);
+      } else {
+        result = await api.requestTorrentDl(Number(itemId), null, false).catch(() => api.requestTorrentDl(Number(itemId), null, true));
+      }
+    } else if (type === 'usenet') {
+      result = await api.requestUsenetDl(Number(itemId), null, false).catch(() => api.requestUsenetDl(Number(itemId), null, true));
+    } else if (type === 'webdl') {
+      result = await api.requestWebDlDl(Number(itemId), null, false).catch(() => api.requestWebDlDl(Number(itemId), null, true));
+    } else {
+      await bot.editMessageText('❌ Unknown type.', { chat_id: targetChat, message_id: loading.message_id });
+      return;
+    }
 
     const link = result?.data;
     if (link && typeof link === 'string') {

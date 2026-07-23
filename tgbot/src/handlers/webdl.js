@@ -6,7 +6,7 @@ import { getUserApiKey, getCachedPlan, checkPlanFeature, getPrivateChatId } from
 import { trackDownload } from '../db.js';
 import {
   formatBytes, formatSpeed, formatEta, formatDate,
-  statusEmoji, progressBar, truncate, escapeHtml,
+  statusEmoji, progressBar, truncate, escapeHtml, extractApiError,
   paginate, paginationKeyboard,
 } from '../utils.js';
 
@@ -197,7 +197,7 @@ export async function handleAddWebDl(bot, chatId, url, userId) {
       { chat_id: chatId, message_id: loading.message_id, parse_mode: 'HTML', reply_markup: replyMarkup }
     );
   } catch (err) {
-    const e = err.response?.data?.detail || err.response?.data?.error || err.message;
+    const e = extractApiError(err);
     await bot.editMessageText(`❌ ${escapeHtml(e)}`, { chat_id: chatId, message_id: loading.message_id, parse_mode: 'HTML' });
   }
 }
