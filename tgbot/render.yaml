@@ -1,0 +1,45 @@
+services:
+  - type: web                  # web service = public URL for admin panel
+    name: torbox-tg-bot
+    env: node
+    region: oregon
+    plan: free
+    rootDir: tgbot
+    buildCommand: npm install
+    startCommand: npm start
+    envVars:
+      # ── Required ────────────────────────────────────────────
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false            # set secret in Render dashboard
+      - key: TORBOX_API_KEY
+        sync: false            # default API key (fallback)
+
+      # ── Admin ────────────────────────────────────────────────
+      - key: BOT_ADMIN_ID
+        sync: false            # your Telegram user ID
+      - key: ADMIN_WEB_PASSWORD
+        sync: false            # web admin panel password — CHANGE THIS
+
+      # ── Session security ──────────────────────────────────────
+      - key: SESSION_SECRET
+        generateValue: true    # Render generates a random secret
+
+      # ── Access control ────────────────────────────────────────
+      # Set to comma-separated Telegram user IDs to restrict access
+      # Leave empty/unset for open access
+      # - key: ALLOWED_USERS
+      #   sync: false
+
+      # ── TorBox API ───────────────────────────────────────────
+      - key: TORBOX_API_BASE
+        value: https://api.torbox.app
+      - key: TORBOX_API_VERSION
+        value: v1
+
+      # ── Bot settings ─────────────────────────────────────────
+      - key: PAGE_SIZE
+        value: "5"
+      - key: MONITOR_INTERVAL_MS
+        value: "60000"         # check downloads every 60 seconds
+      - key: NODE_ENV
+        value: production

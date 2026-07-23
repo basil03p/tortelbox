@@ -1,216 +1,117 @@
 # TorBox Manager
 
-A modern, power-user focused alternative to the default TorBox UI. Built with Next.js for speed and efficiency.
+A modern, high-performance web interface and automation toolkit for [TorBox](https://torbox.app). Built with Next.js 15, React 19, and Tailwind CSS.
 
-## Features
+Includes an optional self-hosted Express backend for 24/7 background automation and a standalone Telegram Bot (`tgbot/`) for chat-based management.
 
-### Core Download Management
+---
 
-- **Batch Upload**: Upload multiple torrent or NZB files and supported hoster or magnet links with a single click
-- **Smart Downloads**: Cherry-pick specific files across multiple torrents
-- **Multi-Format Support**: Manage torrents, Usenet (NZB), and web downloads all in one interface
-- **Efficient list sync**: Hybrid server-side cache — full paginated sync when a type has ≥1000 regular downloads; smaller libraries use complete page-0 polls every 15s without periodic full rescans
-- **TorBox Airlock**: Lock or unlock downloads, filter by airlock state, and automate with rules
-- **File Selection**: Selectively download individual files from torrents
-- **Download History**: Track and manage your download links with expiration tracking
-- **Archived Downloads**: View and manage your archived download items
+## Key Features
 
-### Search & Discovery
+### Download Management
+* **Multi-Format Control**: Unified view for Torrents, Usenet (NZB), and WebDL / Debrid hosters.
+* **Batch Operations**: Bulk enqueue torrent files, magnets, NZB links, or premium hoster URLs.
+* **Granular File Selection**: Inspect multi-file archives and selectively download individual files.
+* **List Synchronization**: Hybrid server-side sync with rev-tagged snapshots to minimize API polling overhead.
+* **TorBox Airlock**: Filter and automate download locking/unlocking.
 
-- **Smart Search**: Search across multiple torrent sites directly from the interface
-- **RSS Feed Management**:
-  - Add and manage multiple RSS feeds
-  - Automatic filtering with custom rules (title, description, category)
-  - Auto-download based on filters
+### Automation & Background Engine (Self-Hosted Backend)
+* **Rule Engine**: Condition-based automation (seeding ratio, file age, speed thresholds, status changes).
+* **Multi-User Isolation**: Independent per-user SQLite database instances with connection pooling.
+* **Background Processing**: Asynchronous state diffing and speed aggregation.
 
-### Automation
+### Telegram Integration (`tgbot/`)
+* **Full Remote Control**: Complete management of torrents, usenet, web downloads, RSS, and account stats from Telegram.
+* **Auto-Notifications**: Background polling auto-DMs the user as soon as a download finishes.
+* **On-Demand Private Links**: Generates fresh time-limited CDN links via DM (`/getlink`).
+* **Cache Inspection**: Query infohash cache status (`/checkcached`) and force cached-only additions (`/addcached`).
+* **Access Control & Web Admin Panel**: Whitelist system (`ALLOWED_USERS`) and web administration dashboard (`http://localhost:3001/admin`).
 
-- **Automation Rules**: Create smart automation rules for torrent management
-  - Multiple condition types (status, ratio, speed, age, airlock state, etc.)
-  - Complex condition logic (AND/OR operators)
-  - Preset rules for common scenarios
-  - Rule execution logs and history
-- **Self-Hosted Backend**: Optional 24/7 automation with persistent storage
-  - Multi-user architecture with per-user database isolation
-  - Run automation rules continuously in the background
-  - SQLite database for data persistence
-  - Intelligent polling based on user activity
-  - State diffing for efficient change detection
-  - Speed aggregation for performance metrics
-  - **Upload retention**: tier-based staged-file quotas (`LIMITED` / `UNLIMITED`) with admin controls; configurable via `UPLOAD_LIMIT_MAX_STORAGE_MB` and `UPLOAD_LIMIT_MAX_FILES`
+### Security & Access Control
+* **Web UI Login Protection**: Optional username and password gate (`WEB_USERNAME` / `WEB_PASSWORD`) for the Next.js interface.
+* **Encrypted Storage**: Sensitive API keys encrypted at rest using AES-256-GCM.
 
-### Audiobook & Media
+---
 
-- **Chapter Extraction**: For audiobooks and long audio files, the app can extract chapter metadata using **ffprobe** (from FFmpeg). This enables chapter lists and navigation in the built-in audio player. ffprobe is optional; see [Deployment: ffprobe setup](DEPLOYMENT.md#ffprobe-setup-audiobook-chapters) for configuration.
-
-### User Experience
-
-- **Customizable Interface**:
-  - Resizable columns
-  - Customizable table views
-  - Card and list view modes
-  - Status filtering
-- **Multiple API Key Management**: Switch between multiple TorBox API keys
-- **Notifications**: Real-time notification system for download events
-- **Speed Charts**: Visualize download/upload speeds with interactive charts
-- **Dark Mode**: Built-in dark mode support
-- **Progressive Web App (PWA)**: Install as a standalone app
-- **File Handler**: Direct file handling for `.torrent` and `.nzb` files
-
-### User Management
-
-- **User Profile**: View account information and settings
-- **User Stats**: Track usage statistics
-
-### Internationalization
-
-- **Multi-Language Support**: Available in 6 languages
-  - English (en)
-  - German (de)
-  - Spanish (es)
-  - French (fr)
-  - Japanese (ja)
-  - Polish (pl)
-
-## Getting Started
-
-For deployment instructions, see [DEPLOYMENT.md](DEPLOYMENT.md).
-
-### Backend Architecture
-
-The self-hosted backend uses a **multi-user architecture**:
-
-- **Master Database**: Stores user registry and encrypted API keys
-- **User Databases**: Separate SQLite database per user for data isolation
-- **Connection Pooling**: LRU cache for efficient database connection management
-- **Automatic Provisioning**: User databases are created on-demand when API keys are entered
-- **Upload quotas**: Default `LIMITED` tier enforces staged `.torrent`/`.nzb` retention limits; admins can set `UNLIMITED` per user in the admin panel
-
-### Self-hosted security (typical setup)
-
-For production, expose **only the Next.js app** (port 3000) via your reverse proxy (e.g. Caddy → `localhost:3000`). Keep the backend on `127.0.0.1:3001` or Docker-internal networking so it is not reachable from the internet.
-
-- Users authenticate to **Next.js** with their TorBox API key (`x-api-key`).
-- Next.js proxies to the backend with the API key (and often `authId` on the server side).
-- **`BACKEND_REQUIRE_API_KEY`** and **`BACKEND_SERVICE_SECRET`** are **optional** for this layout; defaults preserve backward compatibility. Enable them only for defense in depth (e.g. backend port published publicly or untrusted containers on the same Docker network).
-
-See [DEPLOYMENT.md — Backend authentication & network layout](DEPLOYMENT.md#backend-authentication--network-layout) for details.
-
-### Download list sync
-
-Torrent, Usenet, and WebDL lists are synced through Next.js API routes (`/api/torrents`, `/api/usenet`, `/api/webdl`) with a **rev-tagged server-side cache** (`src/app/api/lib/downloadListSync.js`):
-
-- **First visit** — full paginated TorBox fetch; response is a gzip snapshot with monotonic `rev`.
-- **Polling (15s)** — client sends `?rev=N`; unchanged lists return `304`; stale cache blocks on shallow refresh (~10s freshness window, shared across tabs); stale rev may return delta or cached snapshot.
-- **Manual refresh** — `bypass-cache: true` forces a blocking foreground refresh from TorBox.
-- **Post-mutation** — `x-force-list-sync: true` forces shallow refresh while respecting `?rev=` (`304`/delta when possible).
-- **Multi-page catalogs (≥1000 regular items)** — shallow page-0 patches between periodic full reconciles (~5 min).
-- **DELETE** — trusted cache patch removes known IDs and bumps `rev`.
-
-The browser Zustand store merges full snapshots with structural sharing (`src/utils/downloadListMerge.js`). See [DEPLOYMENT.md — Download list sync](DEPLOYMENT.md#download-list-sync) for operator tuning (`DOWNLOAD_SYNC_*` env vars).
-
-### API Key Setup
-
-1. Get your API key from [torbox.app/settings](https://torbox.app/settings)
-2. Enter it in the application when prompted
-3. The key is stored securely in your browser's localStorage
-4. You can manage multiple API keys using the API Key Manager
-
-## Requirements
-
-- **Docker Deployment**: Docker and Docker Compose
-- **Local Development**: Node.js 18.0 or later (or Bun)
-- **Valid TorBox API key** (get yours from [torbox.app/settings](https://torbox.app/settings))
-- **ffprobe (optional)**: Required only for audiobook chapter extraction. The app can auto-download a compatible binary on first use, or you can set `FFPROBE_PATH` to your own ffprobe. See [DEPLOYMENT.md – ffprobe setup](DEPLOYMENT.md#ffprobe-setup-audiobook-chapters).
-
-## Tech Stack
-
-### Frontend
-
-- **Next.js 15** with App Router
-- **React 19** with hooks
-- **Tailwind CSS** for styling
-- **Zustand** for state management
-- **next-intl** for internationalization
-- **Chart.js** for data visualization
-- **@dnd-kit** for drag-and-drop functionality
-- **next-pwa** for Progressive Web App support
-
-### Backend (Optional)
-
-- **Express.js** web framework
-- **SQLite** for master and per-user databases (data isolation)
-- **Bun** runtime for high performance
-- **Helmet** for security headers
-- **CORS** for cross-origin requests
-- **Automation Engine** with rule evaluation and state diffing
-- **Connection Pooling** with LRU cache for scalability
-
-## Project Structure
+## Project Architecture
 
 ```
 torbox-app/
-├── src/
-│   ├── app/              # Next.js app router pages
-│   │   ├── [locale]/     # Internationalized routes
-│   │   └── api/          # API route handlers
-│   │       └── lib/      # Shared API helpers (downloadListSync, torboxFetch, …)
-│   ├── components/       # React components
-│   │   ├── downloads/      # Download management components
-│   ├── contexts/         # React contexts
-│   ├── hooks/            # Custom React hooks
-│   ├── i18n/             # Internationalization config
-│   ├── stores/           # Zustand stores
-│   └── utils/            # Utility functions
-├── backend/              # Self-hosted backend (optional)
-│   ├── src/
-│   │   ├── automation/   # Automation engine
-│   │   │   ├── AutomationEngine.js    # Per-user rule engine
-│   │   │   ├── RuleEvaluator.js       # Condition evaluation
-│   │   │   ├── StateDiffEngine.js     # State change detection
-│   │   │   ├── DerivedFieldsEngine.js # Computed fields
-│   │   │   ├── SpeedAggregator.js     # Speed metrics
-│   │   │   ├── PollingScheduler.js    # Intelligent polling
-│   │   │   └── UserPoller.js          # API polling
-│   │   ├── database/     # Database and migrations
-│   │   │   ├── Database.js            # Master database
-│   │   │   ├── UserDatabaseManager.js # User DB manager
-│   │   │   ├── MigrationRunner.js     # Migration system
-│   │   │   └── migrations/
-│   │   │       ├── master/            # Master DB migrations
-│   │   │       └── user/               # User DB migrations
-│   │   ├── api/          # API client
-│   │   └── utils/        # Utilities (crypto, status helpers)
-└── public/               # Static assets
+├── src/                    # Next.js 15 Web Application
+│   ├── app/                # App Router pages and API routes
+│   │   ├── [locale]/       # Internationalized pages
+│   │   ├── auth/           # Login gate routes (/auth/login, /auth/api)
+│   │   └── api/            # TorBox API proxies & sync handlers
+│   ├── components/         # React UI components
+│   ├── stores/             # Zustand client state
+│   └── proxy.ts            # Middleware (Intl & auth gate)
+├── tgbot/                  # Standalone Telegram Bot (Node.js + SQLite)
+│   ├── src/                # Bot source code (api, db, monitor, admin, handlers)
+│   ├── render.yaml         # Render deployment manifest
+│   └── package.json
+├── backend/                # Optional automation backend (Express + SQLite)
+├── docker-compose.yml      # Multi-container deployment
+└── README.md
 ```
 
-## Contributing
+---
 
-Pull requests are welcome! For major changes, please open an issue first to discuss what you would like to change.
+## Getting Started
 
-### Development Setup
+### Option A: Next.js Web UI Only
 
-1. Fork the repository
-2. Create a feature branch: `git checkout -b feature/amazing-feature`
-3. Make your changes
-4. Test thoroughly
-5. Commit your changes: `git commit -m 'Add amazing feature'`
-6. Push to the branch: `git push origin feature/amazing-feature`
-7. Open a Pull Request
+```bash
+npm install
+npm run dev
+```
 
-### Code Style
+Open [http://localhost:3000](http://localhost:3000) in your browser. Enter your TorBox API key from [torbox.app/settings](https://torbox.app/settings).
 
-- Follow the existing code style
-- Use meaningful variable and function names
-- Add comments for complex logic
-- Ensure all new features are properly internationalized
+### Option B: Docker Compose (Web UI + Backend)
+
+```bash
+cp .env.example .env
+docker compose up -d
+```
+
+### Option C: Telegram Bot Deployment
+
+See [tgbot/README.md](tgbot/README.md) for full setup instructions.
+
+```bash
+cd tgbot
+npm install
+cp .env.example .env
+npm start
+```
+
+---
+
+## Configuration Reference
+
+### Web Application (`.env`)
+
+| Variable | Description | Default |
+|---|---|---|
+| `FRONTEND_URL` | Public origin URL for CORS | `http://localhost:3000` |
+| `ENCRYPTION_KEY` | 32+ byte key for key-at-rest encryption | *Required* |
+| `WEB_USERNAME` | Web UI login username (leave empty to disable login) | *Disabled* |
+| `WEB_PASSWORD` | Web UI login password (leave empty to disable login) | *Disabled* |
+| `ADMIN_API_KEY` | Secret key for `/api/admin` endpoints | *Disabled* |
+
+### Telegram Bot (`tgbot/.env`)
+
+| Variable | Description |
+|---|---|
+| `TELEGRAM_BOT_TOKEN` | Bot API token from `@BotFather` |
+| `TORBOX_API_KEY` | Default TorBox account API key |
+| `BOT_ADMIN_ID` | Telegram user ID for admin operations |
+| `ADMIN_WEB_USERNAME` | Username for Bot Web Admin Panel (`:3001/admin`) |
+| `ADMIN_WEB_PASSWORD` | Password for Bot Web Admin Panel (`:3001/admin`) |
+| `ALLOWED_USERS` | Comma-separated list of allowed Telegram user IDs |
+
+---
 
 ## License
 
 [GNU Affero General Public License v3.0](https://choosealicense.com/licenses/agpl-3.0/)
-
-This program is free software: you can redistribute it and/or modify it under the terms of the GNU Affero General Public License as published by the Free Software Foundation, either version 3 of the License, or (at your option) any later version.
-
-This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU Affero General Public License for more details.
-
-Built with ❤️ for the TorBox community.
