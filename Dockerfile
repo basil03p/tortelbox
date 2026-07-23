@@ -111,10 +111,10 @@ ENV NEXT_TELEMETRY_DISABLED=1
 RUN apk add --no-cache python3 make g++ gcc dumb-init ffmpeg
 
 COPY package*.json ./
-RUN npm ci --only=production
+RUN npm install --omit=dev --no-audit
 
 COPY tgbot/package*.json ./tgbot/
-RUN cd tgbot && npm ci --only=production
+RUN cd tgbot && npm install --omit=dev --no-audit
 
 COPY --from=builder /app/.next ./.next
 COPY --from=builder /app/public ./public
