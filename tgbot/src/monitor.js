@@ -11,7 +11,7 @@ import {
 } from './db.js';
 import { escapeHtml } from './utils.js';
 
-const INTERVAL_MS = parseInt(process.env.MONITOR_INTERVAL_MS || '60000', 10);
+const INTERVAL_MS = parseInt(process.env.MONITOR_INTERVAL_MS || '30000', 10);
 
 // Status strings from TorBox that mean "download is ready"
 const DONE_STATES = new Set([

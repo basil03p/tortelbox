@@ -330,16 +330,21 @@ export async function updateDownloadStatus(userId, itemId, type, status, isDone)
   `).run(status, doneVal, doneVal, uid, itemStr, type);
 }
 
-export async function markNotified(id) {
+export async function markNotified(item) {
   if (mongoDb) {
-    const query = typeof id === 'object' ? id : { id: id };
+    let query;
+    if (item && typeof item === 'object' && item._id) query = { _id: item._id };
+    else if (item && typeof item === 'object' && item.user_id && item.item_id) query = { user_id: String(item.user_id), item_id: String(item.item_id), type: item.type };
+    else query = { id: item };
+
     await mongoDb.collection('tracked_downloads').updateOne(
       query,
       { $set: { notified_done: 1 } }
     ).catch(console.error);
     return;
   }
-  db.prepare('UPDATE tracked_downloads SET notified_done = 1 WHERE id = ?').run(id);
+  const idVal = typeof item === 'object' ? item.id : item;
+  db.prepare('UPDATE tracked_downloads SET notified_done = 1 WHERE id = ?').run(idVal);
 }
 
 export async function getPendingNotifications() {
