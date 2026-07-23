@@ -124,13 +124,14 @@ async function sendPendingNotifications() {
   // Group pending notifications by targetChat
   const byUser = new Map();
   for (const row of pending) {
-    const targetChat = row.chat_id || row.user_id;
-    if (!targetChat) {
-      await markNotified(row._id || row.id);
+    const targetChat = row.chat_id || (await getPrivateChatId(row.user_id)) || row.user_id;
+    const cidStr = targetChat ? String(targetChat).trim() : '';
+    if (!cidStr || cidStr === 'null' || cidStr === 'undefined') {
+      await markNotified(row);
       continue;
     }
-    if (!byUser.has(targetChat)) byUser.set(targetChat, []);
-    byUser.get(targetChat).push(row);
+    if (!byUser.has(cidStr)) byUser.set(cidStr, []);
+    byUser.get(cidStr).push(row);
   }
 
   for (const [targetChat, items] of byUser.entries()) {
