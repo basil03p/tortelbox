@@ -68,11 +68,17 @@ const hasStandalone = fs.existsSync(standalonePath);
 const nextCmd = hasStandalone ? 'node' : 'npx';
 const nextArgs = hasStandalone ? ['.next/standalone/server.js'] : ['next', 'start'];
 
-console.log(`🌐 Launching Next.js Web UI (${nextCmd} ${nextArgs.join(' ')})…`);
+const webPort = process.env.PORT || '10000';
+console.log(`🌐 Launching Next.js Web UI (${nextCmd} ${nextArgs.join(' ')}) on 0.0.0.0:${webPort}…`);
+
 const nextProcess = spawn(nextCmd, nextArgs, {
   cwd: ROOT_DIR,
   stdio: 'inherit',
-  env: { ...process.env },
+  env: {
+    ...process.env,
+    HOSTNAME: '0.0.0.0',
+    PORT: webPort,
+  },
 });
 
 nextProcess.on('error', (err) => {
