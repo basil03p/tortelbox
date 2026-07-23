@@ -101,18 +101,26 @@ RUN echo "=== Standalone output structure ===" && \
     echo "=== Checking server.js ===" && \
     head -20 .next/standalone/server.js || echo "server.js not found"
 
-# Stage 3: Runner - Production runtime image
-# Minimal image containing only what's needed to run the application
+# Stage 3: Runner - Final production image
 FROM node:20-alpine AS runner
 WORKDIR /app
 
-# Disable Next.js telemetry in production runtime
+ENV NODE_ENV=production
 ENV NEXT_TELEMETRY_DISABLED=1
 
-# Install dumb-init for proper signal handling
-# dumb-init ensures signals (SIGTERM, SIGINT) are properly forwarded to the Node.js process
-# ffmpeg: provides ffprobe for audiobook chapter extraction (API route); Alpine build is musl-compatible
-RUN apk add --no-cache dumb-init ffmpeg
+RUN apk add --no-cache python3 make g++ gcc dumb-init ffmpeg
+
+COPY package*.json ./
+RUN npm ci --only=production
+
+COPY tgbot/package*.json ./tgbot/
+RUN cd tgbot && npm ci --only=production
+
+COPY --from=builder /app/.next ./.next
+COPY --from=builder /app/public ./public
+COPY --from=builder /app/scripts ./scripts
+COPY --from=builder /app/tgbot ./tgbot
+COPY --from=builder /app/src ./src
 
 # Create non-root user for enhanced security
 # Running as non-root user limits potential damage if container is compromised
