@@ -8,6 +8,7 @@ import { createApiClient } from './api.js';
 import {
   getActiveTracked, getPendingNotifications,
   updateDownloadStatus, markNotified, getPrivateChatId, getUserApiKey,
+  clearOldPendingNotifications,
 } from './db.js';
 import { escapeHtml } from './utils.js';
 
@@ -32,9 +33,10 @@ function isDoneStatus(status) {
 let bot = null;
 let monitorTimer = null;
 
-export function startMonitor(botInstance) {
+export async function startMonitor(botInstance) {
   bot = botInstance;
   console.log(`🔄 Download monitor started (interval: ${INTERVAL_MS / 1000}s)`);
+  await clearOldPendingNotifications().catch(console.error);
   runCycle(); // run immediately on start
   monitorTimer = setInterval(runCycle, INTERVAL_MS);
 }

@@ -330,21 +330,44 @@ export async function updateDownloadStatus(userId, itemId, type, status, isDone)
   `).run(status, doneVal, doneVal, uid, itemStr, type);
 }
 
-export async function markNotified(item) {
+export async function clearOldPendingNotifications() {
   if (mongoDb) {
-    let query;
-    if (item && typeof item === 'object' && item._id) query = { _id: item._id };
-    else if (item && typeof item === 'object' && item.user_id && item.item_id) query = { user_id: String(item.user_id), item_id: String(item.item_id), type: item.type };
-    else query = { id: item };
-
-    await mongoDb.collection('tracked_downloads').updateOne(
-      query,
+    await mongoDb.collection('tracked_downloads').updateMany(
+      { is_done: 1, notified_done: 0 },
       { $set: { notified_done: 1 } }
     ).catch(console.error);
     return;
   }
-  const idVal = typeof item === 'object' ? item.id : item;
-  db.prepare('UPDATE tracked_downloads SET notified_done = 1 WHERE id = ?').run(idVal);
+  db.prepare('UPDATE tracked_downloads SET notified_done = 1 WHERE is_done = 1 AND notified_done = 0').run();
+}
+
+export async function markNotified(item) {
+  if (mongoDb) {
+    let filter = {};
+    if (item && typeof item === 'object') {
+      if (item.user_id && item.item_id) {
+        filter = { user_id: String(item.user_id), item_id: String(item.item_id), type: item.type };
+      } else if (item._id) {
+        filter = { _id: item._id };
+      } else if (item.id) {
+        filter = { id: item.id };
+      }
+    } else if (item) {
+      filter = { _id: item };
+    }
+
+    await mongoDb.collection('tracked_downloads').updateMany(
+      filter,
+      { $set: { notified_done: 1 } }
+    ).catch(console.error);
+    return;
+  }
+  if (item && typeof item === 'object' && item.user_id && item.item_id) {
+    db.prepare('UPDATE tracked_downloads SET notified_done = 1 WHERE user_id = ? AND item_id = ? AND type = ?').run(String(item.user_id), String(item.item_id), item.type);
+  } else {
+    const idVal = typeof item === 'object' ? item.id : item;
+    db.prepare('UPDATE tracked_downloads SET notified_done = 1 WHERE id = ?').run(idVal);
+  }
 }
 
 export async function getPendingNotifications() {
