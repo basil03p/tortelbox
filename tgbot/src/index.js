@@ -144,31 +144,99 @@ async function handleGetLink(bot, chatId, userId, type, itemId) {
     await bot.sendMessage(chatId, '🔐 Sending your download link privately — check your DMs!');
   }
   const targetChat = privateChatId || String(chatId);
-  const loading = await bot.sendMessage(targetChat, '🔗 Generating fresh download link…');
+  const loading = await bot.sendMessage(targetChat, '🔗 Generating fresh download link(s)…');
 
   try {
     const api = createApiClient(apiKey);
-    let result;
+
     if (type === 'torrent') {
       const details = await api.getTorrentById(Number(itemId)).catch(() => null);
       const items = details?.data;
       const t = Array.isArray(items) ? items.find((x) => String(x.id) === String(itemId)) : items;
       const files = Array.isArray(t?.files) ? t.files : [];
-      if (files.length === 1) {
-        result = await api.requestTorrentDl(Number(itemId), files[0]?.id ?? 0, false);
-      } else if (files.length > 1) {
-        result = await api.requestTorrentDl(Number(itemId), null, true);
-      } else {
-        result = await api.requestTorrentDl(Number(itemId), null, false).catch(() => api.requestTorrentDl(Number(itemId), null, true));
+      const name = t?.name || `Torrent #${itemId}`;
+
+      if (files.length > 1) {
+        // Multi-file download handling
+        const zipRes = await api.requestTorrentDl(Number(itemId), null, true).catch(() => null);
+        const zipLink = zipRes?.data;
+
+        // Request direct links for top files (up to 5 to fit Telegram limit)
+        const topFiles = files.slice(0, 5);
+        const fileLinkPromises = topFiles.map((f) =>
+          api.requestTorrentDl(Number(itemId), f.id, false).catch(() => null)
+        );
+        const fileLinkResults = await Promise.all(fileLinkPromises);
+
+        let text = `📂 <b>Multiple Files Detected (${files.length} Files)</b>\n`;
+        text += `📋 <b>Torrent:</b> ${escapeHtml(truncate(name, 40))}\n\n`;
+
+        if (zipLink && typeof zipLink === 'string') {
+          text += `📦 <b>ZIP Archive Link (All Files):</b>\n${escapeHtml(zipLink)}\n\n`;
+        }
+
+        text += `📄 <b>Individual Direct File Links:</b>\n`;
+        topFiles.forEach((f, idx) => {
+          const flink = fileLinkResults[idx]?.data;
+          const fname = truncate(f.name || f.short_name || `File ${idx + 1}`, 35);
+          const fsize = formatBytes(f.size);
+          text += `<b>${idx + 1}. ${escapeHtml(fname)}</b> (${escapeHtml(fsize)})\n`;
+          if (flink && typeof flink === 'string') {
+            text += `${escapeHtml(flink)}\n\n`;
+          } else {
+            text += `<i>(Use file list to fetch)</i>\n\n`;
+          }
+        });
+
+        if (files.length > 5) {
+          text += `<i>…and ${files.length - 5} more files. Tap "📁 All Files List" below.</i>\n\n`;
+        }
+
+        text += `🕐 <i>Links expire in ~1 hour</i>`;
+
+        const keyboard = {
+          inline_keyboard: [
+            [
+              { text: '📦 Get ZIP Link', callback_data: `getlink:torrent:${itemId}` },
+              { text: '📁 All Files List', callback_data: `torrent_files:${itemId}` },
+            ],
+            [{ text: '🔄 Refresh All Links', callback_data: `getlink:torrent:${itemId}` }],
+          ],
+        };
+
+        await bot.editMessageText(text, {
+          chat_id: targetChat, message_id: loading.message_id,
+          parse_mode: 'HTML', reply_markup: keyboard,
+        });
+        return;
+      } else if (files.length === 1) {
+        const f = files[0];
+        const res = await api.requestTorrentDl(Number(itemId), f?.id ?? 0, false).catch(() => null);
+        const link = res?.data;
+
+        if (link && typeof link === 'string') {
+          let text = `🧲 <b>Single File Download Link</b>\n\n`;
+          text += `📄 <b>File:</b> ${escapeHtml(f?.name || name)} (${escapeHtml(formatBytes(f?.size || t?.size))})\n\n`;
+          text += `${escapeHtml(link)}\n\n`;
+          text += `🕐 <i>Expires in ~1 hour</i>`;
+
+          await bot.editMessageText(text, {
+            chat_id: targetChat, message_id: loading.message_id,
+            parse_mode: 'HTML',
+            reply_markup: {
+              inline_keyboard: [[{ text: '🔄 Refresh Link', callback_data: `getlink:torrent:${itemId}` }]],
+            },
+          });
+          return;
+        }
       }
-    } else if (type === 'usenet') {
-      result = await api.requestUsenetDl(Number(itemId), null, false).catch(() => api.requestUsenetDl(Number(itemId), null, true));
-    } else if (type === 'webdl') {
-      result = await api.requestWebDlDl(Number(itemId), null, false).catch(() => api.requestWebDlDl(Number(itemId), null, true));
-    } else {
-      await bot.editMessageText('❌ Unknown type.', { chat_id: targetChat, message_id: loading.message_id });
-      return;
     }
+
+    // Default fallback link request
+    let result;
+    if (type === 'torrent') result = await api.requestTorrentDl(Number(itemId), null, false).catch(() => api.requestTorrentDl(Number(itemId), null, true));
+    else if (type === 'usenet') result = await api.requestUsenetDl(Number(itemId), null, false).catch(() => api.requestUsenetDl(Number(itemId), null, true));
+    else if (type === 'webdl') result = await api.requestWebDlDl(Number(itemId), null, false).catch(() => api.requestWebDlDl(Number(itemId), null, true));
 
     const link = result?.data;
     if (link && typeof link === 'string') {
