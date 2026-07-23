@@ -1,5 +1,5 @@
 // ============================================================
-// Single Service Runner — Starts Next.js Web UI + Telegram Bot
+// Telegram Bot Service Runner — Pure Telegram Bot (No Web UI)
 // ============================================================
 import { spawn } from 'child_process';
 import { join, dirname } from 'path';
@@ -9,7 +9,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT_DIR  = join(__dirname, '..');
 const BOT_DIR   = join(ROOT_DIR, 'tgbot');
 
-console.log('🚀 Starting TorBox All-In-One Single Service…');
+console.log('🚀 Starting TorBox Telegram Bot Service…');
 
 let isShuttingDown = false;
 let botProcess = null;
@@ -18,7 +18,7 @@ let restartAttempts = 0;
 let lastRestartTime = Date.now();
 const MAX_FAST_RESTARTS = 5;
 
-// ── 1. Spawn Telegram Bot Process ───────────────────────────
+// ── Spawn Telegram Bot Process with Supervisor ──────────────
 function startBotProcess() {
   if (isShuttingDown) return;
   console.log('🤖 Launching Telegram Bot…');
@@ -60,48 +60,15 @@ function startBotProcess() {
 
 startBotProcess();
 
-// ── 2. Spawn Next.js Web Application ────────────────────────
-import fs from 'fs';
-const standalonePath = join(ROOT_DIR, '.next', 'standalone', 'server.js');
-const hasStandalone = fs.existsSync(standalonePath);
-
-const nextCmd = hasStandalone ? 'node' : 'npx';
-const nextArgs = hasStandalone ? ['.next/standalone/server.js'] : ['next', 'start'];
-
-const webPort = process.env.PORT || '10000';
-console.log(`🌐 Launching Next.js Web UI (${nextCmd} ${nextArgs.join(' ')}) on 0.0.0.0:${webPort}…`);
-
-const nextProcess = spawn(nextCmd, nextArgs, {
-  cwd: ROOT_DIR,
-  stdio: 'inherit',
-  env: {
-    ...process.env,
-    HOSTNAME: '0.0.0.0',
-    PORT: webPort,
-  },
-});
-
-nextProcess.on('error', (err) => {
-  console.error('❌ Next.js Web UI process error:', err.message);
-});
-
-nextProcess.on('exit', (code) => {
-  if (isShuttingDown) return;
-  console.warn(`⚠️ Next.js Web UI exited with code ${code}`);
-  process.exit(code || 1);
-});
-
 // ── Graceful Shutdown ───────────────────────────────────────
 function shutdown() {
   if (isShuttingDown) return;
   isShuttingDown = true;
   if (botRestartTimer) clearTimeout(botRestartTimer);
-  console.log('\n🛑 Shutting down All-In-One processes…');
+  console.log('\n🛑 Shutting down Telegram Bot process…');
   if (botProcess) botProcess.kill('SIGTERM');
-  if (nextProcess) nextProcess.kill('SIGTERM');
   process.exit(0);
 }
 
 process.on('SIGINT', shutdown);
 process.on('SIGTERM', shutdown);
-
