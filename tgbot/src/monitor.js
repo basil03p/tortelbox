@@ -54,13 +54,13 @@ async function runCycle() {
 
 // ── Step 1: Poll TorBox for all active tracked downloads ───────
 async function checkActiveDownloads() {
-  const active = getActiveTracked();
-  if (!active.length) return;
+  const active = await getActiveTracked();
+  if (!active || !active.length) return;
 
   // Group by user_id + api_key to minimise API calls
   const byUser = new Map();
   for (const row of active) {
-    const key = row.api_key || getUserApiKey(row.user_id);
+    const key = row.api_key || (await getUserApiKey(row.user_id));
     if (!byUser.has(row.user_id)) byUser.set(row.user_id, { api_key: key, items: [] });
     byUser.get(row.user_id).items.push(row);
   }
@@ -83,7 +83,7 @@ async function checkActiveDownloads() {
           if (!found) continue;
           const status = found.download_state || found.status || '';
           const done   = isDoneStatus(status);
-          updateDownloadStatus(userId, t.item_id, 'torrent', status, done);
+          await updateDownloadStatus(userId, t.item_id, 'torrent', status, done);
         }
       }
 
@@ -94,7 +94,7 @@ async function checkActiveDownloads() {
           const found = list.find(x => String(x.id) === String(u.item_id));
           if (!found) continue;
           const status = found.download_state || found.status || '';
-          updateDownloadStatus(userId, u.item_id, 'usenet', status, isDoneStatus(status));
+          await updateDownloadStatus(userId, u.item_id, 'usenet', status, isDoneStatus(status));
         }
       }
 
@@ -105,7 +105,7 @@ async function checkActiveDownloads() {
           const found = list.find(x => String(x.id) === String(w.item_id));
           if (!found) continue;
           const status = found.download_state || found.status || '';
-          updateDownloadStatus(userId, w.item_id, 'webdl', status, isDoneStatus(status));
+          await updateDownloadStatus(userId, w.item_id, 'webdl', status, isDoneStatus(status));
         }
       }
     } catch (err) {
@@ -118,15 +118,15 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 // ── Step 2: Notify users whose downloads just finished ────────
 async function sendPendingNotifications() {
-  const pending = getPendingNotifications();
-  if (!pending.length) return;
+  const pending = await getPendingNotifications();
+  if (!pending || !pending.length) return;
 
   // Group pending notifications by targetChat
   const byUser = new Map();
   for (const row of pending) {
     const targetChat = row.chat_id || row.user_id;
     if (!targetChat) {
-      markNotified(row.id);
+      await markNotified(row._id || row.id);
       continue;
     }
     if (!byUser.has(targetChat)) byUser.set(targetChat, []);
@@ -153,7 +153,7 @@ async function sendPendingNotifications() {
               },
             }
           );
-          markNotified(row.id);
+          await markNotified(row._id || row.id);
           console.log(`📩 Notified user ${row.user_id} — ${row.type} #${row.item_id}`);
           break;
         } catch (err) {
@@ -163,7 +163,7 @@ async function sendPendingNotifications() {
             await sleep((retrySecs + 1) * 1000);
           } else {
             console.error(`❌ Failed to notify ${row.user_id}:`, err.message);
-            markNotified(row.id);
+            await markNotified(row._id || row.id);
             break;
           }
         }
@@ -188,7 +188,7 @@ async function sendPendingNotifications() {
               ]],
             },
           });
-          items.forEach((row) => markNotified(row.id));
+          for (const row of items) await markNotified(row._id || row.id);
           console.log(`📩 Notified user ${targetChat} — ${items.length} items ready`);
           break;
         } catch (err) {
@@ -198,7 +198,7 @@ async function sendPendingNotifications() {
             await sleep((retrySecs + 1) * 1000);
           } else {
             console.error(`❌ Failed to notify ${targetChat}:`, err.message);
-            items.forEach((row) => markNotified(row.id));
+            for (const row of items) await markNotified(row._id || row.id);
             break;
           }
         }

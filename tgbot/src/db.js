@@ -89,10 +89,10 @@ if (!mongoDb) {
 // USER HELPERS
 // ──────────────────────────────────────────────────────────────
 
-export function upsertUser(userId, { username, firstName } = {}) {
+export async function upsertUser(userId, { username, firstName } = {}) {
   const uid = String(userId);
   if (mongoDb) {
-    mongoDb.collection('users').updateOne(
+    await mongoDb.collection('users').updateOne(
       { user_id: uid },
       { $set: { username: username || null, first_name: firstName || null } },
       { upsert: true }
@@ -108,7 +108,7 @@ export function upsertUser(userId, { username, firstName } = {}) {
   `).run(uid, username || null, firstName || null);
 }
 
-export function isUserAllowed(userId) {
+export async function isUserAllowed(userId) {
   const uid = String(userId);
   const adminId = process.env.BOT_ADMIN_ID ? String(process.env.BOT_ADMIN_ID).trim() : null;
   if (adminId && uid === adminId) return true;
@@ -120,9 +120,11 @@ export function isUserAllowed(userId) {
   }
 
   if (mongoDb) {
-    // Sync check placeholder — if admin or env list configured, enforce strict deny
+    const doc = await mongoDb.collection('users').findOne({ user_id: uid });
+    if (doc?.is_allowed === 1 || doc?.is_allowed === true) return true;
     if (adminId || envAllowed) return false;
-    return true;
+    const count = await mongoDb.collection('users').countDocuments({ is_allowed: 1 });
+    return count === 0;
   }
 
   const count = db.prepare('SELECT COUNT(*) as c FROM users WHERE is_allowed = 1').get();
@@ -135,10 +137,10 @@ export function isUserAllowed(userId) {
   return true;
 }
 
-export function addAllowedUser(userId, addedBy = null) {
+export async function addAllowedUser(userId, addedBy = null) {
   const uid = String(userId);
   if (mongoDb) {
-    mongoDb.collection('users').updateOne(
+    await mongoDb.collection('users').updateOne(
       { user_id: uid },
       { $set: { is_allowed: 1, added_by: addedBy ? String(addedBy) : null, added_at: new Date().toISOString() } },
       { upsert: true }
@@ -152,18 +154,18 @@ export function addAllowedUser(userId, addedBy = null) {
   `).run(uid, addedBy ? String(addedBy) : null);
 }
 
-export function removeAllowedUser(userId) {
+export async function removeAllowedUser(userId) {
   const uid = String(userId);
   if (mongoDb) {
-    mongoDb.collection('users').updateOne({ user_id: uid }, { $set: { is_allowed: 0 } }).catch(console.error);
+    await mongoDb.collection('users').updateOne({ user_id: uid }, { $set: { is_allowed: 0 } }).catch(console.error);
     return;
   }
   db.prepare('UPDATE users SET is_allowed = 0 WHERE user_id = ?').run(uid);
 }
 
-export function listAllowedUsers() {
+export async function listAllowedUsers() {
   if (mongoDb) {
-    return [];
+    return await mongoDb.collection('users').find({ is_allowed: 1 }).toArray();
   }
   return db.prepare(`
     SELECT u.user_id, u.username, u.first_name, u.added_at, k.plan
@@ -174,8 +176,11 @@ export function listAllowedUsers() {
   `).all();
 }
 
-export function isOpenAccess() {
-  if (mongoDb) return false;
+export async function isOpenAccess() {
+  if (mongoDb) {
+    const count = await mongoDb.collection('users').countDocuments({ is_allowed: 1 });
+    return count === 0;
+  }
   const count = db.prepare('SELECT COUNT(*) as c FROM users WHERE is_allowed = 1').get();
   return count.c === 0;
 }
@@ -184,19 +189,20 @@ export function isOpenAccess() {
 // API KEY HELPERS
 // ──────────────────────────────────────────────────────────────
 
-export function getUserApiKey(userId) {
+export async function getUserApiKey(userId) {
   const uid = String(userId);
   if (mongoDb) {
-    return process.env.TORBOX_API_KEY || null;
+    const doc = await mongoDb.collection('api_keys').findOne({ user_id: uid });
+    return doc?.api_key || process.env.TORBOX_API_KEY || null;
   }
   const row = db.prepare('SELECT api_key FROM api_keys WHERE user_id = ?').get(uid);
   return row?.api_key || process.env.TORBOX_API_KEY || null;
 }
 
-export function setUserApiKey(userId, apiKey, plan = null) {
+export async function setUserApiKey(userId, apiKey, plan = null) {
   const uid = String(userId);
   if (mongoDb) {
-    mongoDb.collection('api_keys').updateOne(
+    await mongoDb.collection('api_keys').updateOne(
       { user_id: uid },
       { $set: { api_key: apiKey, plan, updated_at: new Date().toISOString() } },
       { upsert: true }
@@ -210,14 +216,14 @@ export function setUserApiKey(userId, apiKey, plan = null) {
   `).run(uid, apiKey, plan);
 }
 
-export function hasApiKey(userId) {
-  return !!getUserApiKey(userId);
+export async function hasApiKey(userId) {
+  return !!(await getUserApiKey(userId));
 }
 
-export function setCachedPlan(userId, plan) {
+export async function setCachedPlan(userId, plan) {
   const uid = String(userId);
   if (mongoDb) {
-    mongoDb.collection('api_keys').updateOne(
+    await mongoDb.collection('api_keys').updateOne(
       { user_id: uid },
       { $set: { plan, updated_at: new Date().toISOString() } },
       { upsert: true }
@@ -231,18 +237,21 @@ export function setCachedPlan(userId, plan) {
   `).run(uid, plan);
 }
 
-export function getCachedPlan(userId) {
+export async function getCachedPlan(userId) {
   const uid = String(userId);
-  if (mongoDb) return null;
+  if (mongoDb) {
+    const doc = await mongoDb.collection('api_keys').findOne({ user_id: uid });
+    return doc?.plan ?? null;
+  }
   const row = db.prepare('SELECT plan FROM api_keys WHERE user_id = ?').get(uid);
   return row?.plan ?? null;
 }
 
-export function setPrivateChatId(userId, chatId) {
+export async function setPrivateChatId(userId, chatId) {
   const uid = String(userId);
   const cid = String(chatId);
   if (mongoDb) {
-    mongoDb.collection('private_chats').updateOne(
+    await mongoDb.collection('private_chats').updateOne(
       { user_id: uid },
       { $set: { chat_id: cid, updated_at: new Date().toISOString() } },
       { upsert: true }
@@ -256,9 +265,12 @@ export function setPrivateChatId(userId, chatId) {
   `).run(uid, cid);
 }
 
-export function getPrivateChatId(userId) {
+export async function getPrivateChatId(userId) {
   const uid = String(userId);
-  if (mongoDb) return uid;
+  if (mongoDb) {
+    const doc = await mongoDb.collection('private_chats').findOne({ user_id: uid });
+    return doc?.chat_id || uid;
+  }
   const row = db.prepare('SELECT chat_id FROM private_chats WHERE user_id = ?').get(uid);
   return row?.chat_id || uid;
 }
@@ -267,11 +279,11 @@ export function getPrivateChatId(userId) {
 // TRACKED DOWNLOADS (Strict Per-User Explicit Tracking Only)
 // ──────────────────────────────────────────────────────────────
 
-export function trackDownload(userId, itemId, type, name) {
+export async function trackDownload(userId, itemId, type, name) {
   const uid = String(userId);
   const itemStr = String(itemId);
   if (mongoDb) {
-    mongoDb.collection('tracked_downloads').updateOne(
+    await mongoDb.collection('tracked_downloads').updateOne(
       { user_id: uid, item_id: itemStr, type },
       {
         $set: {
@@ -296,7 +308,7 @@ export function trackDownload(userId, itemId, type, name) {
   } catch (_) { /* skip duplicates */ }
 }
 
-export function updateDownloadStatus(userId, itemId, type, status, isDone) {
+export async function updateDownloadStatus(userId, itemId, type, status, isDone) {
   const uid = String(userId);
   const itemStr = String(itemId);
   const doneVal = isDone ? 1 : 0;
@@ -304,7 +316,7 @@ export function updateDownloadStatus(userId, itemId, type, status, isDone) {
   if (mongoDb) {
     const updateObj = { last_status: status, is_done: doneVal };
     if (isDone) updateObj.done_at = new Date().toISOString();
-    mongoDb.collection('tracked_downloads').updateOne(
+    await mongoDb.collection('tracked_downloads').updateOne(
       { user_id: uid, item_id: itemStr, type },
       { $set: updateObj }
     ).catch(console.error);
@@ -318,10 +330,11 @@ export function updateDownloadStatus(userId, itemId, type, status, isDone) {
   `).run(status, doneVal, doneVal, uid, itemStr, type);
 }
 
-export function markNotified(id) {
+export async function markNotified(id) {
   if (mongoDb) {
-    mongoDb.collection('tracked_downloads').updateOne(
-      { _id: id },
+    const query = typeof id === 'object' ? id : { id: id };
+    await mongoDb.collection('tracked_downloads').updateOne(
+      query,
       { $set: { notified_done: 1 } }
     ).catch(console.error);
     return;
@@ -329,9 +342,9 @@ export function markNotified(id) {
   db.prepare('UPDATE tracked_downloads SET notified_done = 1 WHERE id = ?').run(id);
 }
 
-export function getPendingNotifications() {
+export async function getPendingNotifications() {
   if (mongoDb) {
-    return [];
+    return await mongoDb.collection('tracked_downloads').find({ is_done: 1, notified_done: 0 }).toArray();
   }
   return db.prepare(`
     SELECT d.*, k.api_key, p.chat_id
@@ -342,9 +355,9 @@ export function getPendingNotifications() {
   `).all();
 }
 
-export function getActiveTracked() {
+export async function getActiveTracked() {
   if (mongoDb) {
-    return [];
+    return await mongoDb.collection('tracked_downloads').find({ is_done: 0 }).toArray();
   }
   return db.prepare(`
     SELECT d.*, k.api_key
@@ -355,9 +368,11 @@ export function getActiveTracked() {
   `).all();
 }
 
-export function getUserDownloads(userId) {
+export async function getUserDownloads(userId) {
   const uid = String(userId);
-  if (mongoDb) return [];
+  if (mongoDb) {
+    return await mongoDb.collection('tracked_downloads').find({ user_id: uid }).sort({ created_at: -1 }).limit(20).toArray();
+  }
   return db.prepare(`
     SELECT * FROM tracked_downloads
     WHERE user_id = ?
@@ -366,19 +381,24 @@ export function getUserDownloads(userId) {
   `).all(uid);
 }
 
-export function getDownloadById(userId, itemId, type) {
+export async function getDownloadById(userId, itemId, type) {
   const uid = String(userId);
   const itemStr = String(itemId);
-  if (mongoDb) return null;
+  if (mongoDb) {
+    return await mongoDb.collection('tracked_downloads').findOne({ user_id: uid, item_id: itemStr, type });
+  }
   return db.prepare(`
     SELECT * FROM tracked_downloads
     WHERE user_id = ? AND item_id = ? AND type = ?
   `).get(uid, itemStr, type);
 }
 
-export function getUserTrackedItemIds(userId, type) {
+export async function getUserTrackedItemIds(userId, type) {
   const uid = String(userId);
-  if (mongoDb) return new Set();
+  if (mongoDb) {
+    const docs = await mongoDb.collection('tracked_downloads').find({ user_id: uid, type }).toArray();
+    return new Set(docs.map((d) => String(d.item_id)));
+  }
   const rows = db.prepare(`
     SELECT item_id FROM tracked_downloads
     WHERE user_id = ? AND type = ?
@@ -386,12 +406,15 @@ export function getUserTrackedItemIds(userId, type) {
   return new Set(rows.map((r) => String(r.item_id)));
 }
 
-export function isItemOwnedByUser(userId, itemId, type) {
+export async function isItemOwnedByUser(userId, itemId, type) {
   const uid = String(userId);
   const adminId = process.env.BOT_ADMIN_ID ? String(process.env.BOT_ADMIN_ID).trim() : null;
   if (adminId && uid === adminId) return true;
 
-  if (mongoDb) return true;
+  if (mongoDb) {
+    const doc = await mongoDb.collection('tracked_downloads').findOne({ user_id: uid, item_id: String(itemId), type });
+    return !!doc;
+  }
 
   const row = db.prepare(`
     SELECT id FROM tracked_downloads
@@ -400,9 +423,15 @@ export function isItemOwnedByUser(userId, itemId, type) {
   return !!row;
 }
 
-export function getStats() {
+export async function getStats() {
   if (mongoDb) {
-    return { total_users: 0, allowed_users: 0, total_tracked: 0, active_tracked: 0, done_tracked: 0 };
+    return {
+      total_users: await mongoDb.collection('users').countDocuments(),
+      allowed_users: await mongoDb.collection('users').countDocuments({ is_allowed: 1 }),
+      total_tracked: await mongoDb.collection('tracked_downloads').countDocuments(),
+      active_tracked: await mongoDb.collection('tracked_downloads').countDocuments({ is_done: 0 }),
+      done_tracked: await mongoDb.collection('tracked_downloads').countDocuments({ is_done: 1 }),
+    };
   }
   return {
     total_users:    db.prepare('SELECT COUNT(*) as c FROM users').get().c,
