@@ -114,33 +114,96 @@ async function checkActiveDownloads() {
   }
 }
 
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
 // ── Step 2: Notify users whose downloads just finished ────────
 async function sendPendingNotifications() {
   const pending = getPendingNotifications();
+  if (!pending.length) return;
+
+  // Group pending notifications by targetChat
+  const byUser = new Map();
   for (const row of pending) {
     const targetChat = row.chat_id || row.user_id;
-    if (!targetChat) { markNotified(row.id); continue; }
-
-    const typeEmoji = { torrent: '🧲', usenet: '📰', webdl: '🌐' }[row.type] || '📦';
-    const name = row.name || `${row.type} #${row.item_id}`;
-
-    try {
-      await bot.sendMessage(
-        targetChat,
-        `✅ <b>Download Ready!</b>\n\n${typeEmoji} <b>${escapeHtml(name)}</b>\n\nYour content is ready on TorBox.\n⚠️ <i>Download links expire after ~1 hour. Tap below to get a fresh link anytime.</i>`,
-        {
-          parse_mode: 'HTML',
-          reply_markup: {
-            inline_keyboard: [[
-              { text: '🔗 Get Download Link', callback_data: `getlink:${row.type}:${row.item_id}` },
-            ]],
-          },
-        }
-      );
+    if (!targetChat) {
       markNotified(row.id);
-      console.log(`📩 Notified user ${row.user_id} — ${row.type} #${row.item_id}`);
-    } catch (err) {
-      console.error(`❌ Failed to notify ${row.user_id}:`, err.message);
+      continue;
+    }
+    if (!byUser.has(targetChat)) byUser.set(targetChat, []);
+    byUser.get(targetChat).push(row);
+  }
+
+  for (const [targetChat, items] of byUser.entries()) {
+    if (items.length === 1) {
+      const row = items[0];
+      const typeEmoji = { torrent: '🧲', usenet: '📰', webdl: '🌐' }[row.type] || '📦';
+      const name = row.name || `${row.type} #${row.item_id}`;
+
+      for (let attempt = 0; attempt < 3; attempt++) {
+        try {
+          await bot.sendMessage(
+            targetChat,
+            `✅ <b>Download Ready!</b>\n\n${typeEmoji} <b>${escapeHtml(name)}</b>\n\nYour content is ready on TorBox.\n⚠️ <i>Tap below to get direct download links.</i>`,
+            {
+              parse_mode: 'HTML',
+              reply_markup: {
+                inline_keyboard: [[
+                  { text: '🔗 Get Download Link', callback_data: `getlink:${row.type}:${row.item_id}` },
+                ]],
+              },
+            }
+          );
+          markNotified(row.id);
+          console.log(`📩 Notified user ${row.user_id} — ${row.type} #${row.item_id}`);
+          break;
+        } catch (err) {
+          const retrySecs = err.response?.body?.parameters?.retry_after || 5;
+          if (err.message?.includes('429')) {
+            console.warn(`⚠️ Telegram rate limit (429). Retrying after ${retrySecs}s…`);
+            await sleep((retrySecs + 1) * 1000);
+          } else {
+            console.error(`❌ Failed to notify ${row.user_id}:`, err.message);
+            markNotified(row.id);
+            break;
+          }
+        }
+      }
+      await sleep(1000);
+    } else if (items.length > 1) {
+      let text = `✅ <b>${items.length} Downloads Ready!</b>\n\n`;
+      items.forEach((row, idx) => {
+        const typeEmoji = { torrent: '🧲', usenet: '📰', webdl: '🌐' }[row.type] || '📦';
+        const name = row.name || `${row.type} #${row.item_id}`;
+        text += `${idx + 1}. ${typeEmoji} <b>${escapeHtml(name)}</b>\n`;
+      });
+      text += `\n<i>Your content is ready on TorBox. Tap below to view your downloads.</i>`;
+
+      for (let attempt = 0; attempt < 3; attempt++) {
+        try {
+          await bot.sendMessage(targetChat, text, {
+            parse_mode: 'HTML',
+            reply_markup: {
+              inline_keyboard: [[
+                { text: '📥 View My Downloads', callback_data: 'mydownloads' },
+              ]],
+            },
+          });
+          items.forEach((row) => markNotified(row.id));
+          console.log(`📩 Notified user ${targetChat} — ${items.length} items ready`);
+          break;
+        } catch (err) {
+          const retrySecs = err.response?.body?.parameters?.retry_after || 5;
+          if (err.message?.includes('429')) {
+            console.warn(`⚠️ Telegram rate limit (429). Retrying after ${retrySecs}s…`);
+            await sleep((retrySecs + 1) * 1000);
+          } else {
+            console.error(`❌ Failed to notify ${targetChat}:`, err.message);
+            items.forEach((row) => markNotified(row.id));
+            break;
+          }
+        }
+      }
+      await sleep(1000);
     }
   }
 }
