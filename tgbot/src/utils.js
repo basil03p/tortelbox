@@ -1,5 +1,5 @@
 // ============================================================
-// Helpers: byte formatting, status emoji, pagination, etc.
+// Helpers: byte formatting, status emoji, HTML escaping, pagination
 // ============================================================
 
 export function formatBytes(bytes) {
@@ -76,6 +76,14 @@ export function truncate(str, max = 30) {
   if (!str) return '—';
   const s = String(str);
   return s.length > max ? s.substring(0, max - 1) + '…' : s;
+}
+
+export function escapeHtml(str) {
+  return String(str || '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
 }
 
 export function escapeMarkdown(text) {
