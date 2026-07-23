@@ -57,7 +57,14 @@ if (!BOT_ADMIN_ID) console.warn('⚠️  BOT_ADMIN_ID not set — admin commands
 if (!process.env.TORBOX_API_KEY) console.warn('⚠️  TORBOX_API_KEY not set — users must /setkey.');
 
 // ── Bot ───────────────────────────────────────────────────────
-const bot = new TelegramBot(BOT_TOKEN, { polling: true });
+const bot = new TelegramBot(BOT_TOKEN, {
+  polling: {
+    autoStart: true,
+    params: {
+      timeout: 10,
+    },
+  },
+});
 console.log('🤖 TorBox Bot starting…');
 
 // ── Helpers ────────────────────────────────────────────────────
@@ -916,13 +923,52 @@ startMonitor(bot);
 startAdminServer();
 
 // =============================================================
-// ERROR + SHUTDOWN
+// ERROR + SHUTDOWN HANDLING
 // =============================================================
 
-bot.on('polling_error', (err) => console.error('❌ Polling error:', err.message));
-bot.on('error',         (err) => console.error('❌ Bot error:', err.message));
+function formatError(err) {
+  if (!err) return 'Unknown error';
+  if (typeof err === 'string') return err;
+  if (err.response?.body?.description) return err.response.body.description;
+  if (err.response?.data?.detail) return err.response.data.detail;
+  if (err.message) return err.message;
+  if (err.code) return `Error code: ${err.code}`;
+  return String(err);
+}
 
-process.on('SIGINT',  async () => { console.log('\n🛑 Shutting down…'); await bot.stopPolling(); process.exit(0); });
-process.on('SIGTERM', async () => { console.log('\n🛑 SIGTERM…');        await bot.stopPolling(); process.exit(0); });
+bot.on('polling_error', (err) => {
+  const msg = formatError(err);
+  if (msg.includes('409 Conflict')) {
+    console.error('⚠️ Telegram Polling error: 409 Conflict (Another bot instance is running with this token).');
+  } else if (msg.includes('ETIMEDOUT') || msg.includes('EFATAL') || msg.includes('ECONNRESET')) {
+    console.warn(`⚠️ Telegram network glitch (${msg}). Bot will auto-retry…`);
+  } else {
+    console.error('❌ Telegram Polling error:', msg);
+  }
+});
+
+bot.on('error', (err) => {
+  console.error('❌ Telegram Bot error:', formatError(err));
+});
+
+process.on('unhandledRejection', (reason) => {
+  console.error('⚠️ Intercepted Unhandled Promise Rejection:', formatError(reason));
+});
+
+process.on('uncaughtException', (err) => {
+  console.error('💥 Intercepted Uncaught Exception:', formatError(err));
+});
+
+process.on('SIGINT', async () => {
+  console.log('\n🛑 Shutting down TorBox Telegram Bot…');
+  try { await bot.stopPolling(); } catch (_) {}
+  process.exit(0);
+});
+
+process.on('SIGTERM', async () => {
+  console.log('\n🛑 SIGTERM received — shutting down…');
+  try { await bot.stopPolling(); } catch (_) {}
+  process.exit(0);
+});
 
 console.log('✅ TorBox Bot is live!');

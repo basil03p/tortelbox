@@ -11,21 +11,54 @@ const BOT_DIR   = join(ROOT_DIR, 'tgbot');
 
 console.log('🚀 Starting TorBox All-In-One Single Service…');
 
+let isShuttingDown = false;
+let botProcess = null;
+let botRestartTimer = null;
+let restartAttempts = 0;
+let lastRestartTime = Date.now();
+const MAX_FAST_RESTARTS = 5;
+
 // ── 1. Spawn Telegram Bot Process ───────────────────────────
-console.log('🤖 Launching Telegram Bot…');
-const botProcess = spawn('node', ['src/index.js'], {
-  cwd: BOT_DIR,
-  stdio: 'inherit',
-  env: { ...process.env },
-});
+function startBotProcess() {
+  if (isShuttingDown) return;
+  console.log('🤖 Launching Telegram Bot…');
 
-botProcess.on('error', (err) => {
-  console.error('❌ Telegram Bot process error:', err.message);
-});
+  const now = Date.now();
+  if (now - lastRestartTime < 10000) {
+    restartAttempts++;
+  } else {
+    restartAttempts = 1;
+  }
+  lastRestartTime = now;
 
-botProcess.on('exit', (code) => {
-  console.warn(`⚠️ Telegram Bot exited with code ${code}`);
-});
+  if (restartAttempts > MAX_FAST_RESTARTS) {
+    console.error('❌ Telegram Bot is restarting too quickly. Throttling restart by 30 seconds…');
+    botRestartTimer = setTimeout(() => {
+      restartAttempts = 0;
+      startBotProcess();
+    }, 30000);
+    return;
+  }
+
+  botProcess = spawn('node', ['src/index.js'], {
+    cwd: BOT_DIR,
+    stdio: 'inherit',
+    env: { ...process.env },
+  });
+
+  botProcess.on('error', (err) => {
+    console.error('❌ Telegram Bot process error:', err.message);
+  });
+
+  botProcess.on('exit', (code, signal) => {
+    if (isShuttingDown) return;
+    const reason = signal ? `signal ${signal}` : `exit code ${code}`;
+    console.warn(`⚠️ Telegram Bot exited with ${reason}. Auto-restarting in 5 seconds…`);
+    botRestartTimer = setTimeout(startBotProcess, 5000);
+  });
+}
+
+startBotProcess();
 
 // ── 2. Spawn Next.js Web Application ────────────────────────
 console.log('🌐 Launching Next.js Web UI…');
@@ -40,17 +73,22 @@ nextProcess.on('error', (err) => {
 });
 
 nextProcess.on('exit', (code) => {
+  if (isShuttingDown) return;
   console.warn(`⚠️ Next.js Web UI exited with code ${code}`);
   process.exit(code || 1);
 });
 
 // ── Graceful Shutdown ───────────────────────────────────────
 function shutdown() {
+  if (isShuttingDown) return;
+  isShuttingDown = true;
+  if (botRestartTimer) clearTimeout(botRestartTimer);
   console.log('\n🛑 Shutting down All-In-One processes…');
-  botProcess.kill('SIGTERM');
-  nextProcess.kill('SIGTERM');
+  if (botProcess) botProcess.kill('SIGTERM');
+  if (nextProcess) nextProcess.kill('SIGTERM');
   process.exit(0);
 }
 
 process.on('SIGINT', shutdown);
 process.on('SIGTERM', shutdown);
+

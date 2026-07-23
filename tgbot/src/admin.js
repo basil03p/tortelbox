@@ -251,9 +251,19 @@ export function startAdminServer() {
   // Health check
   app.get('/health', (req, res) => res.json({ ok: true }));
 
-  app.listen(PORT, () => {
+  const server = app.listen(PORT, () => {
     console.log(`🌐 Admin panel running at http://localhost:${PORT}/admin`);
     console.log(`🔑 Admin password: ${ADMIN_PASSWORD === 'admin' ? '⚠️  DEFAULT (change ADMIN_WEB_PASSWORD)' : '✅ Set'}`);
+  });
+
+  server.on('error', (err) => {
+    if (err.code === 'EADDRINUSE') {
+      const nextPort = PORT + 1;
+      console.warn(`⚠️ Admin panel port ${PORT} in use, trying port ${nextPort}…`);
+      server.listen(nextPort);
+    } else {
+      console.error('❌ Admin panel server error:', err.message);
+    }
   });
 }
 
