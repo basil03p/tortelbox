@@ -80,12 +80,26 @@ export function upsertUser(userId, { username, firstName } = {}) {
 }
 
 export function isUserAllowed(userId) {
-  // If no users in DB at all → open-access mode
-  const count = db.prepare('SELECT COUNT(*) as c FROM users WHERE is_allowed = 1').get();
-  if (count.c === 0) return true; // open until first allowed user is added
+  const uid = String(userId);
+  const adminId = process.env.BOT_ADMIN_ID ? String(process.env.BOT_ADMIN_ID).trim() : null;
+  if (adminId && uid === adminId) return true;
 
-  const row = db.prepare('SELECT is_allowed FROM users WHERE user_id = ?').get(String(userId));
-  return row?.is_allowed === 1;
+  const envAllowed = process.env.ALLOWED_USER_IDS || process.env.ALLOWED_USERS || process.env.BOT_OWNER_ID || process.env.OWNER_ID;
+  if (envAllowed) {
+    const list = envAllowed.split(',').map(x => x.trim()).filter(Boolean);
+    if (list.includes(uid)) return true;
+  }
+
+  const count = db.prepare('SELECT COUNT(*) as c FROM users WHERE is_allowed = 1').get();
+  if (count.c > 0) {
+    const row = db.prepare('SELECT is_allowed FROM users WHERE user_id = ?').get(uid);
+    return row?.is_allowed === 1;
+  }
+
+  // If admin ID or env allowed list exists, block all unlisted users
+  if (adminId || envAllowed) return false;
+
+  return true;
 }
 
 export function addAllowedUser(userId, addedBy = null) {
