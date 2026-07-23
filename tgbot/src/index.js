@@ -24,7 +24,6 @@ import { upsertUser, trackDownload, isItemOwnedByUser } from './db.js';
 import { createApiClient, extractHashFromMagnet, isInfohash } from './api.js';
 import { escapeHtml, truncate, formatBytes, statusEmoji, progressBar } from './utils.js';
 import { startMonitor } from './monitor.js';
-import { startAdminServer } from './admin.js';
 import { streamUrlToGofile } from './gofile.js';
 
 import {
@@ -1036,12 +1035,17 @@ bot.setMyCommands([
   { command: 'help',          description: '📖 Full command list' },
 ]).then(() => console.log('✅ Bot commands registered.')).catch(console.error);
 
-// =============================================================
-// START MONITOR + ADMIN PANEL
-// =============================================================
-
 startMonitor(bot);
-startAdminServer();
+
+// ── Native Health Check Server for Render ─────────────────────
+import http from 'http';
+const PORT = process.env.PORT || 10000;
+http.createServer((req, res) => {
+  res.writeHead(200, { 'Content-Type': 'text/plain' });
+  res.end('🤖 TorBox Telegram Bot is active and running 24/7\n');
+}).listen(PORT, () => {
+  console.log(`🌐 Health server listening on port ${PORT}`);
+});
 
 // =============================================================
 // ERROR + SHUTDOWN HANDLING
