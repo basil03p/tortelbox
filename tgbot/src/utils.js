@@ -69,7 +69,7 @@ export function progressBar(percent, width = 10) {
   const p = Math.max(0, Math.min(100, percent || 0));
   const filled = Math.round((p / 100) * width);
   const empty = width - filled;
-  return `[${'█'.repeat(filled)}${'░'.repeat(empty)}] ${p.toFixed(1)}%`;
+  return `[${'█'.repeat(filled)}${'░'.repeat(empty)}] ${Math.round(p)}%`;
 }
 
 export function truncate(str, max = 30) {
