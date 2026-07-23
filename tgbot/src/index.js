@@ -25,6 +25,7 @@ import { createApiClient, extractHashFromMagnet, isInfohash } from './api.js';
 import { escapeHtml, truncate, formatBytes, statusEmoji, progressBar } from './utils.js';
 import { startMonitor } from './monitor.js';
 import { startAdminServer } from './admin.js';
+import { streamUrlToGofile } from './gofile.js';
 
 import {
   handleTorrentList, handleTorrentInfo, handleTorrentFiles,
@@ -924,6 +925,12 @@ bot.on('callback_query', async (query) => {
     return;
   }
 
+  if (data.startsWith('gofile:')) {
+    const parts = data.split(':');
+    await handleGofileUpload(bot, chatId, userId, parts[1], parts[2]);
+    return;
+  }
+
   if (data.startsWith('torrent_list:'))    { await handleTorrentList(bot, fakeMsg, parseInt(data.split(':')[1]) || 0); return; }
   if (data.startsWith('torrent_info:'))    { await handleTorrentInfo(bot, chatId, data.split(':')[1], userId); return; }
   if (data.startsWith('torrent_files:'))   { await handleTorrentFiles(bot, chatId, data.split(':')[1], userId); return; }
@@ -983,6 +990,7 @@ bot.setMyCommands([
   { command: 'debrid',        description: '🌐 Add debrid / web link' },
   { command: 'mydownloads',   description: '📥 My downloads + get links' },
   { command: 'getlink',       description: '🔗 Get fresh download link anytime' },
+  { command: 'gofile',        description: '📤 Upload item to Gofile.io' },
   { command: 'torrents',      description: '🧲 List torrents' },
   { command: 'addmagnet',     description: '➕ Add magnet (auto-notifies when ready)' },
   { command: 'addcached',     description: '⚡ Add torrent (cached only)' },

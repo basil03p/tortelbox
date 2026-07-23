@@ -115,7 +115,10 @@ export async function handleTorrentInfo(bot, chatId, torrentId, userId) {
           { text: '▶ Resume', callback_data: `torrent_ctrl:${t.id}:resume` },
           { text: '🔄 Reannounce', callback_data: `torrent_ctrl:${t.id}:reannounce` },
         ],
-        ...(isReady ? [[{ text: '🔗 Get Download Link (private)', callback_data: `torrent_dl:${t.id}:zip` }]] : []),
+        ...(isReady ? [
+          [{ text: '🔗 Get Download Link (private)', callback_data: `torrent_dl:${t.id}:zip` }],
+          [{ text: '📤 Upload to Gofile.io ⚡', callback_data: `gofile:torrent:${t.id}` }],
+        ] : []),
         ...(isReady && files.length > 1 ? [[{ text: '📁 List Files', callback_data: `torrent_files:${t.id}` }]] : []),
         [
           { text: '🗑 Delete', callback_data: `torrent_del:${t.id}:confirm` },
