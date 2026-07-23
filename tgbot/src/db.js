@@ -351,14 +351,16 @@ export async function trackDownload(userId, itemId, type, name) {
   } catch (_) { /* skip duplicates */ }
 }
 
-export async function updateDownloadStatus(userId, itemId, type, status, isDone) {
+export async function updateDownloadStatus(userId, itemId, type, status, isDone, name = null) {
   const uid = String(userId);
   const itemStr = String(itemId);
   const doneVal = isDone ? 1 : 0;
 
   if (mongoDb) {
-    const updateObj = { last_status: status, is_done: doneVal };
-    if (isDone) updateObj.done_at = new Date().toISOString();
+    const updateObj = { last_status: status };
+    if (isDone) updateObj.is_done = 1;
+    if (name) updateObj.name = name;
+
     await mongoDb.collection('tracked_downloads').updateOne(
       { user_id: uid, item_id: itemStr, type },
       { $set: updateObj }
@@ -368,9 +370,9 @@ export async function updateDownloadStatus(userId, itemId, type, status, isDone)
 
   db.prepare(`
     UPDATE tracked_downloads
-    SET last_status = ?, is_done = ?, done_at = CASE WHEN ? = 1 AND done_at IS NULL THEN datetime('now') ELSE done_at END
+    SET last_status = ?, is_done = MAX(is_done, ?), name = COALESCE(?, name)
     WHERE user_id = ? AND item_id = ? AND type = ?
-  `).run(status, doneVal, doneVal, uid, itemStr, type);
+  `).run(status, doneVal, name || null, uid, itemStr, type);
 }
 
 export async function clearOldPendingNotifications() {
@@ -385,31 +387,35 @@ export async function clearOldPendingNotifications() {
 }
 
 export async function markNotified(item) {
-  if (mongoDb) {
-    let filter = {};
-    if (item && typeof item === 'object') {
-      if (item.user_id && item.item_id) {
-        filter = { user_id: String(item.user_id), item_id: String(item.item_id), type: item.type };
-      } else if (item._id) {
-        filter = { _id: item._id };
-      } else if (item.id) {
-        filter = { id: item.id };
-      }
-    } else if (item) {
-      filter = { _id: item };
-    }
+  const uid = item && typeof item === 'object' ? String(item.user_id || item.userId || '') : '';
+  const iid = item && typeof item === 'object' ? String(item.item_id || item.itemId || item.id || '') : '';
 
-    await mongoDb.collection('tracked_downloads').updateMany(
-      filter,
-      { $set: { notified_done: 1 } }
-    ).catch(console.error);
+  if (mongoDb) {
+    if (uid && iid) {
+      await mongoDb.collection('tracked_downloads').updateMany(
+        { user_id: uid, item_id: iid },
+        { $set: { is_done: 1, notified_done: 1 } }
+      ).catch(console.error);
+    }
+    if (item && typeof item === 'object' && item._id) {
+      await mongoDb.collection('tracked_downloads').updateOne(
+        { _id: item._id },
+        { $set: { is_done: 1, notified_done: 1 } }
+      ).catch(console.error);
+    } else if (item && typeof item !== 'object') {
+      await mongoDb.collection('tracked_downloads').updateMany(
+        { $or: [{ _id: item }, { id: item }] },
+        { $set: { is_done: 1, notified_done: 1 } }
+      ).catch(console.error);
+    }
     return;
   }
-  if (item && typeof item === 'object' && item.user_id && item.item_id) {
-    db.prepare('UPDATE tracked_downloads SET notified_done = 1 WHERE user_id = ? AND item_id = ? AND type = ?').run(String(item.user_id), String(item.item_id), item.type);
+
+  if (uid && iid) {
+    db.prepare('UPDATE tracked_downloads SET is_done = 1, notified_done = 1 WHERE user_id = ? AND item_id = ?').run(uid, iid);
   } else {
     const idVal = typeof item === 'object' ? item.id : item;
-    db.prepare('UPDATE tracked_downloads SET notified_done = 1 WHERE id = ?').run(idVal);
+    db.prepare('UPDATE tracked_downloads SET is_done = 1, notified_done = 1 WHERE id = ?').run(idVal);
   }
 }
 

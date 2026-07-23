@@ -85,7 +85,8 @@ async function checkActiveDownloads() {
           if (!found) continue;
           const status = found.download_state || found.status || '';
           const done   = isDoneStatus(status);
-          await updateDownloadStatus(userId, t.item_id, 'torrent', status, done);
+          const name   = found.name || found.filename || null;
+          await updateDownloadStatus(userId, t.item_id, 'torrent', status, done, name);
         }
       }
 
@@ -96,7 +97,8 @@ async function checkActiveDownloads() {
           const found = list.find(x => String(x.id) === String(u.item_id));
           if (!found) continue;
           const status = found.download_state || found.status || '';
-          await updateDownloadStatus(userId, u.item_id, 'usenet', status, isDoneStatus(status));
+          const name   = found.name || found.filename || null;
+          await updateDownloadStatus(userId, u.item_id, 'usenet', status, isDoneStatus(status), name);
         }
       }
 
@@ -107,7 +109,8 @@ async function checkActiveDownloads() {
           const found = list.find(x => String(x.id) === String(w.item_id));
           if (!found) continue;
           const status = found.download_state || found.status || '';
-          await updateDownloadStatus(userId, w.item_id, 'webdl', status, isDoneStatus(status));
+          const name   = found.name || found.filename || null;
+          await updateDownloadStatus(userId, w.item_id, 'webdl', status, isDoneStatus(status), name);
         }
       }
     } catch (err) {
