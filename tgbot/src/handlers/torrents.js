@@ -76,10 +76,6 @@ export async function handleTorrentList(bot, msg, page = 0) {
 
 // ── Torrent Detail ────────────────────────────────────────────
 export async function handleTorrentInfo(bot, chatId, torrentId, userId) {
-  if (!isItemOwnedByUser(userId, torrentId, 'torrent')) {
-    await bot.sendMessage(chatId, '🚫 <b>Access Denied</b>\n\nYou do not own this torrent.', { parse_mode: 'HTML' });
-    return;
-  }
   const apiKey = getUserApiKey(userId);
   try {
     const api = createApiClient(apiKey);
