@@ -148,9 +148,9 @@ async function handleGetLink(bot, chatId, userId, type, itemId) {
   try {
     const api = createApiClient(apiKey);
     let result;
-    if (type === 'torrent') result = await api.requestTorrentDl(Number(itemId), null, false);
-    else if (type === 'usenet') result = await api.requestUsenetDl(Number(itemId), null, false);
-    else if (type === 'webdl') result = await api.requestWebDlDl(Number(itemId), null, false);
+    if (type === 'torrent') result = await api.requestTorrentDl(Number(itemId), null, true);
+    else if (type === 'usenet') result = await api.requestUsenetDl(Number(itemId), null, true);
+    else if (type === 'webdl') result = await api.requestWebDlDl(Number(itemId), null, true);
     else { await bot.editMessageText('❌ Unknown type.', { chat_id: targetChat, message_id: loading.message_id }); return; }
 
     const link = result?.data;
