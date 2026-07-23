@@ -65,6 +65,7 @@ const bot = new TelegramBot(BOT_TOKEN, {
     },
   },
 });
+bot.deleteWebHook().catch(() => {});
 console.log('🤖 TorBox Bot starting…');
 
 // ── Helpers ────────────────────────────────────────────────────
@@ -937,10 +938,15 @@ function formatError(err) {
   return String(err);
 }
 
+let isConflictCoolingDown = false;
 bot.on('polling_error', (err) => {
   const msg = formatError(err);
   if (msg.includes('409 Conflict')) {
-    console.error('⚠️ Telegram Polling error: 409 Conflict (Another bot instance is running with this token).');
+    if (!isConflictCoolingDown) {
+      isConflictCoolingDown = true;
+      console.warn('⚠️ Telegram Polling Conflict (409): Another bot instance is running with this token. (If running locally, stop your local bot or use a separate test bot token).');
+      setTimeout(() => { isConflictCoolingDown = false; }, 15000);
+    }
   } else if (msg.includes('ETIMEDOUT') || msg.includes('EFATAL') || msg.includes('ECONNRESET')) {
     console.warn(`⚠️ Telegram network glitch (${msg}). Bot will auto-retry…`);
   } else {
