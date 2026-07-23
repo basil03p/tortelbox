@@ -159,7 +159,7 @@ async function sendPendingNotifications() {
               },
             }
           );
-          await markNotified(row._id || row.id);
+          await markNotified(row);
           console.log(`📩 Notified user ${row.user_id} — ${row.type} #${row.item_id}`);
           break;
         } catch (err) {
@@ -169,7 +169,7 @@ async function sendPendingNotifications() {
             await sleep((retrySecs + 1) * 1000);
           } else {
             console.error(`❌ Failed to notify ${row.user_id}:`, err.message);
-            await markNotified(row._id || row.id);
+            await markNotified(row);
             break;
           }
         }

@@ -387,38 +387,34 @@ export async function clearOldPendingNotifications() {
 }
 
 export async function markNotified(item) {
+  if (!item) return;
   if (mongoDb) {
-    if (!item) return;
-    const docId = typeof item === 'object' ? item._id : item;
-    const uidStr = item?.user_id != null ? String(item.user_id) : null;
-    const uidNum = item?.user_id != null && !isNaN(Number(item.user_id)) ? Number(item.user_id) : null;
-    const iidStr = item?.item_id != null ? String(item.item_id) : null;
-    const iidNum = item?.item_id != null && !isNaN(Number(item.item_id)) ? Number(item.item_id) : null;
+    let filter = {};
+    if (typeof item === 'object' && item !== null) {
+      if (item._id) {
+        filter = { _id: item._id };
+      } else if (item.user_id && item.item_id) {
+        filter = { user_id: item.user_id, item_id: item.item_id };
+      } else if (item.id) {
+        filter = { id: item.id };
+      }
+    } else {
+      filter = { _id: item };
+    }
 
-    const clauses = [];
-    if (docId) clauses.push({ _id: docId });
-    if (uidStr && iidStr) clauses.push({ user_id: uidStr, item_id: iidStr });
-    if (uidNum && iidNum) clauses.push({ user_id: uidNum, item_id: iidNum });
-    if (uidStr && iidNum) clauses.push({ user_id: uidStr, item_id: iidNum });
-    if (uidNum && iidStr) clauses.push({ user_id: uidNum, item_id: iidStr });
+    const res = await mongoDb.collection('tracked_downloads').updateMany(
+      filter,
+      { $set: { is_done: 1, notified_done: 1 } }
+    ).catch(console.error);
 
-    if (clauses.length > 0) {
-      await mongoDb.collection('tracked_downloads').updateMany(
-        { $or: clauses },
-        { $set: { is_done: 1, notified_done: 1 } }
-      ).catch(console.error);
+    if (res?.matchedCount > 0) {
+      console.log(`✅ Marked notified in MongoDB (matched ${res.matchedCount} doc)`);
     }
     return;
   }
 
-  const uid = item && typeof item === 'object' ? String(item.user_id || '') : '';
-  const iid = item && typeof item === 'object' ? String(item.item_id || '') : '';
-  if (uid && iid) {
-    db.prepare('UPDATE tracked_downloads SET is_done = 1, notified_done = 1 WHERE user_id = ? AND item_id = ?').run(uid, iid);
-  } else {
-    const idVal = typeof item === 'object' ? item.id : item;
-    db.prepare('UPDATE tracked_downloads SET is_done = 1, notified_done = 1 WHERE id = ?').run(idVal);
-  }
+  const idVal = typeof item === 'object' ? item.id : item;
+  db.prepare('UPDATE tracked_downloads SET is_done = 1, notified_done = 1 WHERE id = ? OR (user_id = ? AND item_id = ?)').run(idVal, item?.user_id, item?.item_id);
 }
 
 export async function getPendingNotifications() {
