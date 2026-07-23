@@ -177,11 +177,24 @@ export async function handleAddNzbLink(bot, chatId, url, userId) {
     const result = await api.createUsenet({ url });
     const ok = result?.success;
     const name = result?.data?.name || url;
-    const usenetId = result?.data?.usenet_id || result?.data?.id;
+    const usenetId = result?.data?.usenet_id || result?.data?.id || result?.usenet_id || result?.id;
     if (ok && usenetId) trackDownload(userId, usenetId, 'usenet', name);
+    
+    const replyMarkup = (ok && usenetId) ? {
+      inline_keyboard: [[
+        { text: '📋 View Details', callback_data: `usenet_info:${usenetId}` },
+        { text: '🔗 Get Link', callback_data: `getlink:usenet:${usenetId}` }
+      ]]
+    } : undefined;
+
     await bot.editMessageText(
-      ok ? `✅ Added!\n📰 <b>${escapeHtml(truncate(name, 40))}</b>` : `❌ ${escapeHtml(result?.detail || 'Failed.')}`,
-      { chat_id: chatId, message_id: loading.message_id, parse_mode: 'HTML' }
+      ok
+        ? `✅ <b>Usenet Download Added!</b>\n\n` +
+          `📰 <b>Name:</b> ${escapeHtml(truncate(name, 40))}\n` +
+          `🆔 <b>Usenet ID:</b> <code>${usenetId || 'N/A'}</code>\n\n` +
+          `🔄 <i>I will monitor this and auto-notify you when it's ready.</i>`
+        : `❌ ${escapeHtml(result?.detail || 'Failed.')}`,
+      { chat_id: chatId, message_id: loading.message_id, parse_mode: 'HTML', reply_markup: replyMarkup }
     );
   } catch (err) {
     const e = err.response?.data?.detail || err.response?.data?.error || err.message;
@@ -198,11 +211,24 @@ export async function handleAddNzbFile(bot, chatId, fileBuffer, fileName, userId
     const result = await api.createUsenet({ file: { data: fileBuffer, name: fileName } });
     const ok = result?.success;
     const name = result?.data?.name || fileName;
-    const usenetId = result?.data?.usenet_id || result?.data?.id;
+    const usenetId = result?.data?.usenet_id || result?.data?.id || result?.usenet_id || result?.id;
     if (ok && usenetId) trackDownload(userId, usenetId, 'usenet', name);
+
+    const replyMarkup = (ok && usenetId) ? {
+      inline_keyboard: [[
+        { text: '📋 View Details', callback_data: `usenet_info:${usenetId}` },
+        { text: '🔗 Get Link', callback_data: `getlink:usenet:${usenetId}` }
+      ]]
+    } : undefined;
+
     await bot.editMessageText(
-      ok ? `✅ Added!\n📰 <b>${escapeHtml(name)}</b>` : `❌ ${escapeHtml(result?.detail || 'Failed.')}`,
-      { chat_id: chatId, message_id: loading.message_id, parse_mode: 'HTML' }
+      ok
+        ? `✅ <b>NZB File Uploaded!</b>\n\n` +
+          `📰 <b>Name:</b> ${escapeHtml(truncate(name, 40))}\n` +
+          `🆔 <b>Usenet ID:</b> <code>${usenetId || 'N/A'}</code>\n\n` +
+          `🔄 <i>I will monitor this and auto-notify you when it's ready.</i>`
+        : `❌ ${escapeHtml(result?.detail || 'Failed.')}`,
+      { chat_id: chatId, message_id: loading.message_id, parse_mode: 'HTML', reply_markup: replyMarkup }
     );
   } catch (err) {
     const e = err.response?.data?.detail || err.response?.data?.error || err.message;

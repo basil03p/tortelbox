@@ -177,11 +177,24 @@ export async function handleAddWebDl(bot, chatId, url, userId) {
     const result = await api.createWebDl({ url });
     const ok = result?.success;
     const name = result?.data?.name || url;
-    const webdlId = result?.data?.webdl_id || result?.data?.id;
+    const webdlId = result?.data?.webdl_id || result?.data?.id || result?.web_id || result?.id;
     if (ok && webdlId) trackDownload(userId, webdlId, 'webdl', name);
+
+    const replyMarkup = (ok && webdlId) ? {
+      inline_keyboard: [[
+        { text: '📋 View Details', callback_data: `webdl_info:${webdlId}` },
+        { text: '🔗 Get Link', callback_data: `getlink:webdl:${webdlId}` }
+      ]]
+    } : undefined;
+
     await bot.editMessageText(
-      ok ? `✅ Added!\n🌐 <b>${escapeHtml(truncate(name, 40))}</b>` : `❌ ${escapeHtml(result?.detail || 'Failed.')}`,
-      { chat_id: chatId, message_id: loading.message_id, parse_mode: 'HTML' }
+      ok
+        ? `✅ <b>Web Download Added!</b>\n\n` +
+          `🌐 <b>Name:</b> ${escapeHtml(truncate(name, 40))}\n` +
+          `🆔 <b>WebDL ID:</b> <code>${webdlId || 'N/A'}</code>\n\n` +
+          `🔄 <i>I will monitor this and auto-notify you when it's ready.</i>`
+        : `❌ ${escapeHtml(result?.detail || 'Failed.')}`,
+      { chat_id: chatId, message_id: loading.message_id, parse_mode: 'HTML', reply_markup: replyMarkup }
     );
   } catch (err) {
     const e = err.response?.data?.detail || err.response?.data?.error || err.message;

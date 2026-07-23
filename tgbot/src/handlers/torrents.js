@@ -276,13 +276,24 @@ export async function handleAddMagnet(bot, chatId, magnet, userId) {
     const result = await api.createTorrent({ magnet });
     const ok = result?.success;
     const name = result?.data?.name || result?.data?.hash || '(new torrent)';
-    const torrentId = result?.data?.torrent_id || result?.data?.id;
+    const torrentId = result?.data?.torrent_id || result?.data?.id || result?.torrent_id || result?.id;
     if (ok && torrentId) trackDownload(userId, torrentId, 'torrent', name);
+    
+    const replyMarkup = (ok && torrentId) ? {
+      inline_keyboard: [[
+        { text: '📋 View Details', callback_data: `torrent_info:${torrentId}` },
+        { text: '🔗 Get Link', callback_data: `getlink:torrent:${torrentId}` }
+      ]]
+    } : undefined;
+
     await bot.editMessageText(
       ok
-        ? `✅ Torrent added!\n📋 <b>${escapeHtml(name)}</b>\n\n🔄 <i>I will notify you when it's ready to download.</i>`
-        : `❌ ${escapeHtml(result?.detail || 'Failed')}`,
-      { chat_id: chatId, message_id: loading2.message_id, parse_mode: 'HTML' }
+        ? `✅ <b>Torrent Added!</b>\n\n` +
+          `📋 <b>Name:</b> ${escapeHtml(name)}\n` +
+          `🆔 <b>Torrent ID:</b> <code>${torrentId || 'N/A'}</code>\n\n` +
+          `🔄 <i>I will monitor this and auto-notify you when it's ready.</i>`
+        : `❌ ${escapeHtml(result?.detail || 'Failed to add torrent')}`,
+      { chat_id: chatId, message_id: loading2.message_id, parse_mode: 'HTML', reply_markup: replyMarkup }
     );
   } catch (err) {
     const e = err.response?.data?.detail || err.response?.data?.error || err.message;
@@ -326,14 +337,24 @@ export async function handleAddCached(bot, chatId, input, userId) {
     const result = await api.createTorrent({ magnet: addMagnet, addOnlyIfCached: true });
     const ok = result?.success;
     const name = result?.data?.name || result?.data?.hash || hash;
-    const torrentId = result?.data?.torrent_id || result?.data?.id;
+    const torrentId = result?.data?.torrent_id || result?.data?.id || result?.torrent_id || result?.id;
     if (ok && torrentId) trackDownload(userId, torrentId, 'torrent', name);
+
+    const replyMarkup = (ok && torrentId) ? {
+      inline_keyboard: [[
+        { text: '📋 View Details', callback_data: `torrent_info:${torrentId}` },
+        { text: '🔗 Get Link', callback_data: `getlink:torrent:${torrentId}` }
+      ]]
+    } : undefined;
 
     await bot.editMessageText(
       ok
-        ? `✅ <b>Added from cache!</b>\n📋 ${escapeHtml(name)}\n\n⚡ No waiting — content is already cached on TorBox.`
+        ? `✅ <b>Added from Cache!</b>\n\n` +
+          `📋 <b>Name:</b> ${escapeHtml(name)}\n` +
+          `🆔 <b>Torrent ID:</b> <code>${torrentId || 'N/A'}</code>\n\n` +
+          `⚡ <i>No waiting — content is cached on TorBox.</i>`
         : `❌ ${escapeHtml(result?.detail || 'Failed to add')}`,
-      { chat_id: chatId, message_id: loading.message_id, parse_mode: 'HTML' }
+      { chat_id: chatId, message_id: loading.message_id, parse_mode: 'HTML', reply_markup: replyMarkup }
     );
   } catch (err) {
     const e = err.response?.data?.detail || err.response?.data?.error || err.message;
@@ -393,13 +414,24 @@ export async function handleAddTorrentFile(bot, chatId, fileBuffer, fileName, us
     const result = await api.createTorrent({ file: { data: fileBuffer, name: fileName } });
     const ok = result?.success;
     const name = result?.data?.name || result?.data?.hash || fileName;
-    const torrentId = result?.data?.torrent_id || result?.data?.id;
+    const torrentId = result?.data?.torrent_id || result?.data?.id || result?.torrent_id || result?.id;
     if (ok && torrentId) trackDownload(userId, torrentId, 'torrent', name);
+
+    const replyMarkup = (ok && torrentId) ? {
+      inline_keyboard: [[
+        { text: '📋 View Details', callback_data: `torrent_info:${torrentId}` },
+        { text: '🔗 Get Link', callback_data: `getlink:torrent:${torrentId}` }
+      ]]
+    } : undefined;
+
     await bot.editMessageText(
       ok
-        ? `✅ Torrent added!\n📋 <b>${escapeHtml(name)}</b>\n\n🔄 <i>I will notify you when it's ready to download.</i>`
+        ? `✅ <b>Torrent Uploaded!</b>\n\n` +
+          `📋 <b>Name:</b> ${escapeHtml(name)}\n` +
+          `🆔 <b>Torrent ID:</b> <code>${torrentId || 'N/A'}</code>\n\n` +
+          `🔄 <i>I will monitor this and auto-notify you when it's ready.</i>`
         : `❌ ${escapeHtml(result?.detail || 'Failed')}`,
-      { chat_id: chatId, message_id: loading.message_id, parse_mode: 'HTML' }
+      { chat_id: chatId, message_id: loading.message_id, parse_mode: 'HTML', reply_markup: replyMarkup }
     );
   } catch (err) {
     const e = err.response?.data?.detail || err.response?.data?.error || err.message;
