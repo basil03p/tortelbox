@@ -1,7 +1,7 @@
-const { DESKTOP_MD_MEDIA_QUERY } = require('./src/utils/responsiveBreakpoints.js');
+import { DESKTOP_MD_MEDIA_QUERY } from './src/utils/responsiveBreakpoints.js';
 
 /** @type {import('tailwindcss').Config} */
-module.exports = {
+export default {
   content: [
     './src/pages/**/*.{js,ts,jsx,tsx,mdx}',
     './src/components/**/*.{js,ts,jsx,tsx,mdx}',
