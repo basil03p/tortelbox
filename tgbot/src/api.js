@@ -156,18 +156,18 @@ export function createApiClient(apiKey) {
     },
 
     async createWebDl({ url, name = '' }) {
-      const FormData = (await import('form-data')).default;
-      const form = new FormData();
-      if (url) form.append('link', url);
-      if (name) form.append('name', name);
+      const params = new URLSearchParams();
+      if (url) params.append('link', url);
+      if (name) params.append('name', name);
+
       try {
-        const r = await client.post('/api/webdl/createwebdownload', form, {
-          headers: form.getHeaders(),
+        const r = await client.post('/api/webdl/createwebdownload', params.toString(), {
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
           timeout: 60000,
         });
         return r.data;
       } catch (err) {
-        // Fallback to JSON payload if form-data returns error
+        // Fallback to JSON payload if urlencoded returns error
         const r = await client.post('/api/webdl/createwebdownload', { link: url, name }, { timeout: 60000 });
         return r.data;
       }
