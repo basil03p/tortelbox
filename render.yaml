@@ -1,14 +1,14 @@
 services:
-  # 🤖 Service 1: Telegram Bot + Admin Panel
+  # 🚀 ALL-IN-ONE SINGLE SERVICE: Web UI + Telegram Bot
   - type: web
-    name: torbox-tg-bot
+    name: torbox-all-in-one
     env: node
     region: oregon
     plan: free
-    rootDir: tgbot
-    buildCommand: npm install
-    startCommand: npm start
+    buildCommand: npm install && cd tgbot && npm install && cd .. && npm run build
+    startCommand: node scripts/start-all.js
     envVars:
+      # ── Telegram Bot ─────────────────────────────────────────
       - key: TELEGRAM_BOT_TOKEN
         sync: false
       - key: TORBOX_API_KEY
@@ -30,15 +30,7 @@ services:
       - key: PAGE_SIZE
         value: "5"
 
-  # 🌐 Service 2: Next.js Web UI
-  - type: web
-    name: torbox-web-ui
-    env: node
-    region: oregon
-    plan: free
-    buildCommand: npm install && npm run build
-    startCommand: npm start
-    envVars:
+      # ── Next.js Web UI ───────────────────────────────────────
       - key: WEB_USERNAME
         value: admin
       - key: WEB_PASSWORD

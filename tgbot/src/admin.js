@@ -15,7 +15,7 @@ import {
 
 const ADMIN_USERNAME = process.env.ADMIN_WEB_USERNAME || 'admin';
 const ADMIN_PASSWORD = process.env.ADMIN_WEB_PASSWORD || 'admin';
-const PORT = parseInt(process.env.PORT || '3001', 10);
+const PORT = parseInt(process.env.ADMIN_PORT || process.env.BOT_ADMIN_PORT || '3001', 10);
 const SESSION_SECRET = process.env.SESSION_SECRET || 'torbox-admin-secret-' + Math.random();
 
 const PLAN_NAMES = { 0: 'Free', 1: 'Essential', 2: 'Pro', 3: 'Ultimate' };
