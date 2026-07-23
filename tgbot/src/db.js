@@ -387,30 +387,32 @@ export async function clearOldPendingNotifications() {
 }
 
 export async function markNotified(item) {
-  const uid = item && typeof item === 'object' ? String(item.user_id || item.userId || '') : '';
-  const iid = item && typeof item === 'object' ? String(item.item_id || item.itemId || item.id || '') : '';
-
   if (mongoDb) {
-    if (uid && iid) {
+    if (!item) return;
+    const docId = typeof item === 'object' ? item._id : item;
+    const uidStr = item?.user_id != null ? String(item.user_id) : null;
+    const uidNum = item?.user_id != null && !isNaN(Number(item.user_id)) ? Number(item.user_id) : null;
+    const iidStr = item?.item_id != null ? String(item.item_id) : null;
+    const iidNum = item?.item_id != null && !isNaN(Number(item.item_id)) ? Number(item.item_id) : null;
+
+    const clauses = [];
+    if (docId) clauses.push({ _id: docId });
+    if (uidStr && iidStr) clauses.push({ user_id: uidStr, item_id: iidStr });
+    if (uidNum && iidNum) clauses.push({ user_id: uidNum, item_id: iidNum });
+    if (uidStr && iidNum) clauses.push({ user_id: uidStr, item_id: iidNum });
+    if (uidNum && iidStr) clauses.push({ user_id: uidNum, item_id: iidStr });
+
+    if (clauses.length > 0) {
       await mongoDb.collection('tracked_downloads').updateMany(
-        { user_id: uid, item_id: iid },
-        { $set: { is_done: 1, notified_done: 1 } }
-      ).catch(console.error);
-    }
-    if (item && typeof item === 'object' && item._id) {
-      await mongoDb.collection('tracked_downloads').updateOne(
-        { _id: item._id },
-        { $set: { is_done: 1, notified_done: 1 } }
-      ).catch(console.error);
-    } else if (item && typeof item !== 'object') {
-      await mongoDb.collection('tracked_downloads').updateMany(
-        { $or: [{ _id: item }, { id: item }] },
+        { $or: clauses },
         { $set: { is_done: 1, notified_done: 1 } }
       ).catch(console.error);
     }
     return;
   }
 
+  const uid = item && typeof item === 'object' ? String(item.user_id || '') : '';
+  const iid = item && typeof item === 'object' ? String(item.item_id || '') : '';
   if (uid && iid) {
     db.prepare('UPDATE tracked_downloads SET is_done = 1, notified_done = 1 WHERE user_id = ? AND item_id = ?').run(uid, iid);
   } else {
