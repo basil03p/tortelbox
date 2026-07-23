@@ -894,13 +894,17 @@ bot.on('text', async (msg) => {
     const plan = getCachedPlan(userId);
     const showUsenet = plan === null || plan >= 1;
     const showWebDl  = plan === null || plan >= 1;
+
+    // Store pending URL in session to avoid Telegram 64-byte callback_data limit
+    sessions.update(userId, { pendingUrl: text });
+
     const btns = [];
-    if (showWebDl)  btns.push({ text: '🌐 Web Download / Debrid', callback_data: `add_webdl_confirm:${encodeURIComponent(text.substring(0, 200))}` });
-    if (showUsenet) btns.push({ text: '📰 Usenet NZB',           callback_data: `add_nzb_confirm:${encodeURIComponent(text.substring(0, 200))}` });
+    if (showWebDl)  btns.push({ text: '🌐 Web Download / Debrid', callback_data: 'add_webdl_confirm' });
+    if (showUsenet) btns.push({ text: '📰 Usenet NZB',           callback_data: 'add_nzb_confirm' });
     btns.push({ text: '❌ Cancel', callback_data: 'cancel' });
 
     await bot.sendMessage(chatId,
-      `🔗 <b>URL Detected</b>\n<code>${escapeHtml(text.substring(0, 80))}${text.length > 80 ? '…' : ''}</code>\n\nWhat type of download is this?`,
+      `🔗 <b>URL Detected</b>\n<code>${escapeHtml(truncate(text, 80))}</code>\n\nWhat type of download is this?`,
       { parse_mode: 'HTML', reply_markup: { inline_keyboard: [btns.slice(0, 2), [btns[btns.length - 1]]] } }
     );
     return;
@@ -995,8 +999,26 @@ bot.on('callback_query', async (query) => {
   if (data.startsWith('queued:'))         { await handleQueued(bot, fakeMsg, data.split(':')[1]); return; }
   if (data === 'notif_clear')             { await handleClearNotifications(bot, chatId, userId); return; }
   if (data.startsWith('rss_ctrl:'))       { const [, id, op] = data.split(':'); await handleRssControl(bot, chatId, id, op, userId); return; }
-  if (data.startsWith('add_webdl_confirm:')) { await handleAddWebDl(bot, chatId, decodeURIComponent(data.replace('add_webdl_confirm:', '')), userId); return; }
-  if (data.startsWith('add_nzb_confirm:'))   { await handleAddNzbLink(bot, chatId, decodeURIComponent(data.replace('add_nzb_confirm:', '')), userId); return; }
+  if (data === 'add_webdl_confirm' || data.startsWith('add_webdl_confirm:')) {
+    const session = sessions.get(userId);
+    const url = session?.pendingUrl || (data.includes(':') ? decodeURIComponent(data.replace('add_webdl_confirm:', '')) : null);
+    if (!url) {
+      await bot.sendMessage(chatId, '❌ No URL found. Please send the link again.');
+      return;
+    }
+    await handleAddWebDl(bot, chatId, url, userId);
+    return;
+  }
+  if (data === 'add_nzb_confirm' || data.startsWith('add_nzb_confirm:')) {
+    const session = sessions.get(userId);
+    const url = session?.pendingUrl || (data.includes(':') ? decodeURIComponent(data.replace('add_nzb_confirm:', '')) : null);
+    if (!url) {
+      await bot.sendMessage(chatId, '❌ No NZB URL found. Please send the link again.');
+      return;
+    }
+    await handleAddNzbLink(bot, chatId, url, userId);
+    return;
+  }
   if (data === 'cancel')                  { await bot.sendMessage(chatId, '❌ Cancelled.'); return; }
 });
 
