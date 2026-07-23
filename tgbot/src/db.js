@@ -174,13 +174,16 @@ export function getPrivateChatId(userId) {
 // TRACKED DOWNLOADS
 // ──────────────────────────────────────────────────────────────
 
-export function trackDownload(userId, itemId, type, name) {
+export function trackDownload(userId, itemId, type, name, isAlreadyDone = false) {
   try {
+    const doneVal = isAlreadyDone ? 1 : 0;
     db.prepare(`
-      INSERT INTO tracked_downloads (user_id, item_id, type, name)
-      VALUES (?, ?, ?, ?)
-      ON CONFLICT(user_id, item_id, type) DO UPDATE SET name = excluded.name
-    `).run(String(userId), String(itemId), type, name || null);
+      INSERT INTO tracked_downloads (user_id, item_id, type, name, is_done, notified_done)
+      VALUES (?, ?, ?, ?, ?, ?)
+      ON CONFLICT(user_id, item_id, type) DO UPDATE SET
+        name = excluded.name,
+        notified_done = CASE WHEN excluded.notified_done = 1 THEN 1 ELSE tracked_downloads.notified_done END
+    `).run(String(userId), String(itemId), type, name || null, doneVal, doneVal);
   } catch (_) { /* silently skip duplicates */ }
 }
 

@@ -37,7 +37,11 @@ export async function handleUsenetList(bot, msg, page = 0) {
     }
 
     for (const u of items) {
-      if (u.id) trackDownload(userId, u.id, 'usenet', u.name);
+      if (u.id) {
+        const s = (u.download_state || u.status || '').toLowerCase();
+        const isDone = s.includes('complet') || s.includes('seed') || s.includes('cached') || s.includes('finish') || s.includes('ready');
+        trackDownload(userId, u.id, 'usenet', u.name, isDone);
+      }
     }
 
     const { items: pageItems, page: p, totalPages, total } = paginate(items, page, PAGE_SIZE);

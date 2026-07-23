@@ -29,9 +29,13 @@ export async function handleTorrentList(bot, msg, page = 0) {
       return;
     }
 
-    // Auto-track all torrents in DB so /mydownloads and /getlink work instantly
+    // Auto-track torrents in DB so /mydownloads works, but mark already-completed items as notified_done=1 so no spam notifications are sent
     for (const t of torrents) {
-      if (t.id) trackDownload(userId, t.id, 'torrent', t.name);
+      if (t.id) {
+        const s = (t.download_state || t.status || '').toLowerCase();
+        const isDone = s.includes('complet') || s.includes('seed') || s.includes('cached') || s.includes('finish') || s.includes('ready');
+        trackDownload(userId, t.id, 'torrent', t.name, isDone);
+      }
     }
 
     const { items, page: p, totalPages, total } = paginate(torrents, page, PAGE_SIZE);

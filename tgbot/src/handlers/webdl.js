@@ -37,7 +37,11 @@ export async function handleWebDlList(bot, msg, page = 0) {
     }
 
     for (const w of items) {
-      if (w.id) trackDownload(userId, w.id, 'webdl', w.name);
+      if (w.id) {
+        const s = (w.download_state || w.status || '').toLowerCase();
+        const isDone = s.includes('complet') || s.includes('seed') || s.includes('cached') || s.includes('finish') || s.includes('ready');
+        trackDownload(userId, w.id, 'webdl', w.name, isDone);
+      }
     }
 
     const { items: pageItems, page: p, totalPages, total } = paginate(items, page, PAGE_SIZE);
