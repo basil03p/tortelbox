@@ -372,7 +372,8 @@ bot.onText(/\/start/, async (msg) => {
   const PLAN_LABEL = { 0: '🆓 Free', 1: '🥈 Essential', 2: '🥇 Pro', 3: '💎 Ultimate' };
 
   await bot.sendMessage(chatId,
-    `👋 <b>Welcome, ${escapeHtml(firstName)}!</b>\n` +
+    `👋 <b>Welcome, ${escapeHtml(firstName)}!</b>\n\n` +
+    `🆔 <b>Your Telegram ID:</b> <code>${userId}</code>\n` +
     `🚀 <b>TorBox Manager Bot</b>\n` +
     (plan !== null ? `🏷 Plan: <b>${escapeHtml(PLAN_LABEL[plan] || `Plan ${plan}`)}</b>\n` : '') +
     '\n' +

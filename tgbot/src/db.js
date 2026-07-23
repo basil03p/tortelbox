@@ -201,7 +201,7 @@ export function getPendingNotifications() {
   return db.prepare(`
     SELECT d.*, k.api_key, p.chat_id
     FROM tracked_downloads d
-    JOIN api_keys k ON k.user_id = d.user_id
+    LEFT JOIN api_keys k ON k.user_id = d.user_id
     LEFT JOIN private_chats p ON p.user_id = d.user_id
     WHERE d.is_done = 1 AND d.notified_done = 0
   `).all();
@@ -212,7 +212,7 @@ export function getActiveTracked() {
   return db.prepare(`
     SELECT d.*, k.api_key
     FROM tracked_downloads d
-    JOIN api_keys k ON k.user_id = d.user_id
+    LEFT JOIN api_keys k ON k.user_id = d.user_id
     WHERE d.is_done = 0
     ORDER BY d.created_at
   `).all();

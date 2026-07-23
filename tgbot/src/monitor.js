@@ -7,8 +7,9 @@
 import { createApiClient } from './api.js';
 import {
   getActiveTracked, getPendingNotifications,
-  updateDownloadStatus, markNotified, getPrivateChatId,
+  updateDownloadStatus, markNotified, getPrivateChatId, getUserApiKey,
 } from './db.js';
+import { escapeHtml } from './utils.js';
 
 const INTERVAL_MS = parseInt(process.env.MONITOR_INTERVAL_MS || '60000', 10);
 
@@ -59,7 +60,8 @@ async function checkActiveDownloads() {
   // Group by user_id + api_key to minimise API calls
   const byUser = new Map();
   for (const row of active) {
-    if (!byUser.has(row.user_id)) byUser.set(row.user_id, { api_key: row.api_key, items: [] });
+    const key = row.api_key || getUserApiKey(row.user_id);
+    if (!byUser.has(row.user_id)) byUser.set(row.user_id, { api_key: key, items: [] });
     byUser.get(row.user_id).items.push(row);
   }
 
@@ -125,10 +127,9 @@ async function sendPendingNotifications() {
     try {
       await bot.sendMessage(
         targetChat,
-        `✅ *Download Ready\\!*\n\n${typeEmoji} *${escMd(name)}*\n\nYour content is ready on TorBox\\.` +
-        `\n⚠️ _Download links expire after ~1 hour\\. Tap below to get a fresh link anytime\\._`,
+        `✅ <b>Download Ready!</b>\n\n${typeEmoji} <b>${escapeHtml(name)}</b>\n\nYour content is ready on TorBox.\n⚠️ <i>Download links expire after ~1 hour. Tap below to get a fresh link anytime.</i>`,
         {
-          parse_mode: 'MarkdownV2',
+          parse_mode: 'HTML',
           reply_markup: {
             inline_keyboard: [[
               { text: '🔗 Get Download Link', callback_data: `getlink:${row.type}:${row.item_id}` },
