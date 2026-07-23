@@ -3,7 +3,7 @@
 // ============================================================
 import { createApiClient, extractHashFromMagnet, isInfohash } from '../api.js';
 import { getUserApiKey, getCachedPlan, checkPlanFeature, getPrivateChatId } from '../session.js';
-import { trackDownload } from '../db.js';
+import { trackDownload, getUserTrackedItemIds, isItemOwnedByUser } from '../db.js';
 import {
   formatBytes, formatSpeed, formatEta, formatDate, formatRatio,
   statusEmoji, progressBar, truncate, escapeHtml,
@@ -22,20 +22,16 @@ export async function handleTorrentList(bot, msg, page = 0) {
   try {
     const api = createApiClient(apiKey);
     const data = await api.getTorrentList();
-    const torrents = data?.data || [];
+    const userItemIds = getUserTrackedItemIds(userId, 'torrent');
+    const adminId = process.env.BOT_ADMIN_ID ? String(process.env.BOT_ADMIN_ID).trim() : null;
+    const isUserAdmin = adminId && String(userId) === adminId;
+
+    const allTorrents = data?.data || [];
+    const torrents = allTorrents.filter((t) => isUserAdmin || userItemIds.has(String(t.id)));
 
     if (!torrents.length) {
-      await bot.editMessageText('📭 No torrents found.\n\nSend a magnet link or .torrent file to add one.', { chat_id: chatId, message_id: loading.message_id });
+      await bot.editMessageText('📭 No torrents found for your account.\n\nSend a magnet link or .torrent file to add one.', { chat_id: chatId, message_id: loading.message_id });
       return;
-    }
-
-    // Auto-track torrents in DB so /mydownloads works, but mark already-completed items as notified_done=1 so no spam notifications are sent
-    for (const t of torrents) {
-      if (t.id) {
-        const s = (t.download_state || t.status || '').toLowerCase();
-        const isDone = s.includes('complet') || s.includes('seed') || s.includes('cached') || s.includes('finish') || s.includes('ready');
-        trackDownload(userId, t.id, 'torrent', t.name, isDone);
-      }
     }
 
     const { items, page: p, totalPages, total } = paginate(torrents, page, PAGE_SIZE);
@@ -80,6 +76,10 @@ export async function handleTorrentList(bot, msg, page = 0) {
 
 // ── Torrent Detail ────────────────────────────────────────────
 export async function handleTorrentInfo(bot, chatId, torrentId, userId) {
+  if (!isItemOwnedByUser(userId, torrentId, 'torrent')) {
+    await bot.sendMessage(chatId, '🚫 <b>Access Denied</b>\n\nYou do not own this torrent.', { parse_mode: 'HTML' });
+    return;
+  }
   const apiKey = getUserApiKey(userId);
   try {
     const api = createApiClient(apiKey);

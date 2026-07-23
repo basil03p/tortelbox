@@ -3,7 +3,7 @@
 // ============================================================
 import { createApiClient } from '../api.js';
 import { getUserApiKey, getCachedPlan, checkPlanFeature, getPrivateChatId } from '../session.js';
-import { trackDownload } from '../db.js';
+import { trackDownload, getUserTrackedItemIds, isItemOwnedByUser } from '../db.js';
 import {
   formatBytes, formatSpeed, formatEta, formatDate,
   statusEmoji, progressBar, truncate, escapeHtml, extractApiError,
@@ -29,19 +29,16 @@ export async function handleWebDlList(bot, msg, page = 0) {
   try {
     const api = createApiClient(apiKey);
     const data = await api.getWebDlList();
-    const items = data?.data || [];
+    const userItemIds = getUserTrackedItemIds(userId, 'webdl');
+    const adminId = process.env.BOT_ADMIN_ID ? String(process.env.BOT_ADMIN_ID).trim() : null;
+    const isUserAdmin = adminId && String(userId) === adminId;
+
+    const allItems = data?.data || [];
+    const items = allItems.filter((w) => isUserAdmin || userItemIds.has(String(w.id)));
 
     if (!items.length) {
-      await bot.editMessageText('📭 No web downloads found.\n\nUse /addwebdl <url> to add a link.', { chat_id: chatId, message_id: loading.message_id });
+      await bot.editMessageText('📭 No web downloads found for your account.\n\nUse /addwebdl <url> to add a link.', { chat_id: chatId, message_id: loading.message_id });
       return;
-    }
-
-    for (const w of items) {
-      if (w.id) {
-        const s = (w.download_state || w.status || '').toLowerCase();
-        const isDone = s.includes('complet') || s.includes('seed') || s.includes('cached') || s.includes('finish') || s.includes('ready');
-        trackDownload(userId, w.id, 'webdl', w.name, isDone);
-      }
     }
 
     const { items: pageItems, page: p, totalPages, total } = paginate(items, page, PAGE_SIZE);

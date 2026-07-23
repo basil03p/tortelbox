@@ -3,7 +3,7 @@
 // ============================================================
 import { createApiClient } from '../api.js';
 import { getUserApiKey, getCachedPlan, checkPlanFeature, getPrivateChatId } from '../session.js';
-import { trackDownload } from '../db.js';
+import { trackDownload, getUserTrackedItemIds, isItemOwnedByUser } from '../db.js';
 import {
   formatBytes, formatSpeed, formatEta, formatDate,
   statusEmoji, progressBar, truncate, escapeHtml,
@@ -29,19 +29,16 @@ export async function handleUsenetList(bot, msg, page = 0) {
   try {
     const api = createApiClient(apiKey);
     const data = await api.getUsenetList();
-    const items = data?.data || [];
+    const userItemIds = getUserTrackedItemIds(userId, 'usenet');
+    const adminId = process.env.BOT_ADMIN_ID ? String(process.env.BOT_ADMIN_ID).trim() : null;
+    const isUserAdmin = adminId && String(userId) === adminId;
+
+    const allItems = data?.data || [];
+    const items = allItems.filter((u) => isUserAdmin || userItemIds.has(String(u.id)));
 
     if (!items.length) {
-      await bot.editMessageText('📭 No usenet downloads found.\n\nUse /addnzb <url> or send an .nzb file.', { chat_id: chatId, message_id: loading.message_id });
+      await bot.editMessageText('📭 No usenet downloads found for your account.\n\nUse /addnzb <url> or send an .nzb file.', { chat_id: chatId, message_id: loading.message_id });
       return;
-    }
-
-    for (const u of items) {
-      if (u.id) {
-        const s = (u.download_state || u.status || '').toLowerCase();
-        const isDone = s.includes('complet') || s.includes('seed') || s.includes('cached') || s.includes('finish') || s.includes('ready');
-        trackDownload(userId, u.id, 'usenet', u.name, isDone);
-      }
     }
 
     const { items: pageItems, page: p, totalPages, total } = paginate(items, page, PAGE_SIZE);

@@ -251,6 +251,25 @@ export function getDownloadById(userId, itemId, type) {
   `).get(String(userId), String(itemId), type);
 }
 
+export function getUserTrackedItemIds(userId, type) {
+  const rows = db.prepare(`
+    SELECT item_id FROM tracked_downloads
+    WHERE user_id = ? AND type = ?
+  `).all(String(userId), type);
+  return new Set(rows.map((r) => String(r.item_id)));
+}
+
+export function isItemOwnedByUser(userId, itemId, type) {
+  const adminId = process.env.BOT_ADMIN_ID ? String(process.env.BOT_ADMIN_ID).trim() : null;
+  if (adminId && String(userId) === adminId) return true;
+
+  const row = db.prepare(`
+    SELECT id FROM tracked_downloads
+    WHERE user_id = ? AND item_id = ? AND type = ?
+  `).get(String(userId), String(itemId), type);
+  return !!row;
+}
+
 // ──────────────────────────────────────────────────────────────
 // STATS (for admin panel)
 // ──────────────────────────────────────────────────────────────

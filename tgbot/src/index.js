@@ -20,7 +20,7 @@ import {
   checkPlanFeature,
 } from './session.js';
 
-import { upsertUser, trackDownload } from './db.js';
+import { upsertUser, trackDownload, isItemOwnedByUser } from './db.js';
 import { createApiClient, extractHashFromMagnet, isInfohash } from './api.js';
 import { escapeHtml, truncate, formatBytes, statusEmoji, progressBar } from './utils.js';
 import { startMonitor } from './monitor.js';
@@ -145,6 +145,12 @@ async function handleGetLink(bot, chatId, userId, type, itemId, isExplicitZip = 
     await bot.sendMessage(chatId, '🔐 Sending your download link privately — check your DMs!');
   }
   const targetChat = privateChatId || String(chatId);
+
+  if (!isItemOwnedByUser(userId, itemId, type)) {
+    await bot.sendMessage(targetChat, '🚫 <b>Access Denied</b>\n\nYou do not own this download.', { parse_mode: 'HTML' });
+    return;
+  }
+
   const loading = await bot.sendMessage(targetChat, '🔗 Generating fresh download link(s)…');
 
   try {
