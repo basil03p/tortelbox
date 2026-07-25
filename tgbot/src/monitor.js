@@ -20,14 +20,19 @@ const DONE_STATES = new Set([
   'cached', 'ready', 'finished', 'done',
 ]);
 // Partially-done patterns (case-insensitive check)
-function isDoneStatus(status) {
-  if (!status) return false;
-  const s = status.toLowerCase();
+function isDoneStatus(itemOrStatus) {
+  if (!itemOrStatus) return false;
+  if (typeof itemOrStatus === 'object') {
+    if (itemOrStatus.download_finished === true || itemOrStatus.progress >= 1 || itemOrStatus.cached === true) return true;
+    itemOrStatus = itemOrStatus.download_state || itemOrStatus.status || '';
+  }
+  const s = String(itemOrStatus).toLowerCase();
   return DONE_STATES.has(s) ||
     s.includes('complet') ||
     s.includes('seed') ||
     s.includes('cached') ||
-    s.includes('finish');
+    s.includes('finish') ||
+    s.includes('ready');
 }
 
 let bot = null;
@@ -84,7 +89,7 @@ async function checkActiveDownloads() {
           const found = list.find(x => String(x.id) === String(t.item_id));
           if (!found) continue;
           const status = found.download_state || found.status || '';
-          const done   = isDoneStatus(status);
+          const done   = isDoneStatus(found);
           const name   = found.name || found.filename || null;
           await updateDownloadStatus(userId, t.item_id, 'torrent', status, done, name);
         }
@@ -98,7 +103,7 @@ async function checkActiveDownloads() {
           if (!found) continue;
           const status = found.download_state || found.status || '';
           const name   = found.name || found.filename || null;
-          await updateDownloadStatus(userId, u.item_id, 'usenet', status, isDoneStatus(status), name);
+          await updateDownloadStatus(userId, u.item_id, 'usenet', status, isDoneStatus(found), name);
         }
       }
 
@@ -110,7 +115,7 @@ async function checkActiveDownloads() {
           if (!found) continue;
           const status = found.download_state || found.status || '';
           const name   = found.name || found.filename || null;
-          await updateDownloadStatus(userId, w.item_id, 'webdl', status, isDoneStatus(status), name);
+          await updateDownloadStatus(userId, w.item_id, 'webdl', status, isDoneStatus(found), name);
         }
       }
     } catch (err) {

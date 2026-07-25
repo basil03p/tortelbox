@@ -3,10 +3,11 @@
 // ============================================================
 import { createApiClient, extractHashFromMagnet, isInfohash } from '../api.js';
 import { getUserApiKey, getCachedPlan, checkPlanFeature, getPrivateChatId } from '../session.js';
-import { trackDownload, getUserTrackedItemIds, isItemOwnedByUser } from '../db.js';
+import { trackDownload, getUserTrackedItemIds, isItemOwnedByUser, updateDownloadStatus } from '../db.js';
+import { handleGetLink } from '../index.js';
 import {
   formatBytes, formatSpeed, formatEta, formatDate, formatRatio,
-  statusEmoji, progressBar, truncate, escapeHtml,
+  statusEmoji, progressBar, truncate, escapeHtml, extractApiError,
   paginate, paginationKeyboard,
 } from '../utils.js';
 
@@ -135,7 +136,7 @@ export async function handleTorrentInfo(bot, chatId, torrentId, userId) {
 }
 
 // ── List Files for a torrent ──────────────────────────────────
-export async function handleTorrentFiles(bot, chatId, torrentId, userId) {
+export async function handleTorrentFiles(bot, chatId, torrentId, userId, page = 0) {
   const apiKey = getUserApiKey(userId);
   try {
     const api = createApiClient(apiKey);
@@ -149,23 +150,38 @@ export async function handleTorrentFiles(bot, chatId, torrentId, userId) {
       return;
     }
 
-    let text = `📁 <b>Files in: ${escapeHtml(truncate(t.name, 40))}</b>\n\n`;
+    const pageSize = 10;
+    const totalPages = Math.ceil(files.length / pageSize);
+    const p = Math.max(0, Math.min(page, totalPages - 1));
+    const startIdx = p * pageSize;
+    const pageFiles = files.slice(startIdx, startIdx + pageSize);
+
+    let text = `📁 <b>Files in: ${escapeHtml(truncate(t?.name || 'Torrent', 45))}</b> (${files.length} Total)\n`;
+    if (totalPages > 1) text += `📄 <i>Page ${p + 1} of ${totalPages}</i>\n`;
+    text += `\n`;
     const btns = [];
 
-    files.slice(0, 15).forEach((f, i) => {
-      const fname = truncate(f.name || f.short_name || `File ${i + 1}`, 35);
+    pageFiles.forEach((f, i) => {
+      const globalIdx = startIdx + i + 1;
+      const fullFname = f.name || f.short_name || `File ${globalIdx}`;
       const size = formatBytes(f.size);
-      text += `${i + 1}. ${escapeHtml(fname)} (${escapeHtml(size)})\n`;
-      btns.push([{ text: `⬇ ${truncate(fname, 25)}`, callback_data: `torrent_dl:${torrentId}:${f.id}` }]);
+      
+      text += `<b>${globalIdx}.</b> 📄 <code>${escapeHtml(fullFname)}</code> (${escapeHtml(size)})\n\n`;
+      btns.push([{ text: `⬇️ #${globalIdx} ${truncate(fullFname, 35)}`, callback_data: `torrent_dl:${torrentId}:${f.id}` }]);
     });
 
-    if (files.length > 15) text += `\n<i>…and ${files.length - 15} more</i>`;
+    const navRow = [];
+    if (p > 0) navRow.push({ text: '◀️ Prev', callback_data: `torrent_files:${torrentId}:${p - 1}` });
+    if (totalPages > 1) navRow.push({ text: `Page ${p + 1}/${totalPages}`, callback_data: `torrent_files:${torrentId}:${p}` });
+    if (p < totalPages - 1) navRow.push({ text: 'Next ▶️', callback_data: `torrent_files:${torrentId}:${p + 1}` });
+    if (navRow.length) btns.push(navRow);
+
     btns.push([{ text: '📦 Download All (ZIP)', callback_data: `torrent_dl:${torrentId}:zip` }]);
     btns.push([{ text: '🔙 Back', callback_data: `torrent_info:${torrentId}` }]);
 
     await bot.sendMessage(chatId, text, { parse_mode: 'HTML', reply_markup: { inline_keyboard: btns } });
   } catch (err) {
-    const e = err.response?.data?.detail || err.response?.data?.error || err.message;
+    const e = extractApiError(err);
     await bot.sendMessage(chatId, `❌ ${escapeHtml(e)}`, { parse_mode: 'HTML' });
   }
 }
@@ -282,6 +298,34 @@ export async function handleAddMagnet(bot, chatId, magnet, userId) {
     const torrentId = result?.data?.torrent_id || result?.data?.id || result?.torrent_id || result?.id;
     if (ok && torrentId) trackDownload(userId, torrentId, 'torrent', name);
     
+    if (ok && torrentId) {
+      const tInfo = await api.getTorrentById(torrentId).catch(() => null);
+      const tItem = Array.isArray(tInfo?.data) ? tInfo.data.find(x => String(x.id) === String(torrentId)) : tInfo?.data || result?.data;
+      const isReady = tItem?.download_finished || tItem?.cached || tItem?.progress >= 1 || (tItem?.download_state && String(tItem.download_state).toLowerCase().includes('complete'));
+
+      if (isReady) {
+        await updateDownloadStatus(userId, torrentId, 'torrent', 'completed', true, name).catch(() => {});
+        const replyMarkup = {
+          inline_keyboard: [
+            [
+              { text: '🔗 Get Link', callback_data: `getlink:torrent:${torrentId}` },
+              { text: '📁 List Files', callback_data: `torrent_files:${torrentId}` }
+            ],
+            [{ text: '📋 View Details', callback_data: `torrent_info:${torrentId}` }]
+          ]
+        };
+        await bot.editMessageText(
+          `⚡ <b>Instant Download Ready! (Cached)</b>\n\n` +
+          `📋 <b>Name:</b> ${escapeHtml(name)}\n` +
+          `🆔 <b>Torrent ID:</b> <code>${torrentId}</code>\n\n` +
+          `🎉 <i>Content is cached on TorBox! Sending your link…</i>`,
+          { chat_id: chatId, message_id: loading2.message_id, parse_mode: 'HTML', reply_markup: replyMarkup }
+        );
+        await handleGetLink(bot, chatId, userId, 'torrent', torrentId);
+        return;
+      }
+    }
+
     const replyMarkup = (ok && torrentId) ? {
       inline_keyboard: [[
         { text: '📋 View Details', callback_data: `torrent_info:${torrentId}` },
@@ -295,11 +339,11 @@ export async function handleAddMagnet(bot, chatId, magnet, userId) {
           `📋 <b>Name:</b> ${escapeHtml(name)}\n` +
           `🆔 <b>Torrent ID:</b> <code>${torrentId || 'N/A'}</code>\n\n` +
           `🔄 <i>I will monitor this and auto-notify you when it's ready.</i>`
-        : `❌ ${escapeHtml(result?.detail || 'Failed to add torrent')}`,
+        : `❌ ${escapeHtml(result?.detail || result?.error || 'Failed to add torrent')}`,
       { chat_id: chatId, message_id: loading2.message_id, parse_mode: 'HTML', reply_markup: replyMarkup }
     );
   } catch (err) {
-    const e = err.response?.data?.detail || err.response?.data?.error || err.message;
+    const e = extractApiError(err);
     await bot.editMessageText(`❌ ${escapeHtml(e)}`, { chat_id: chatId, message_id: loading2.message_id, parse_mode: 'HTML' });
   }
 }
@@ -343,6 +387,34 @@ export async function handleAddCached(bot, chatId, input, userId) {
     const torrentId = result?.data?.torrent_id || result?.data?.id || result?.torrent_id || result?.id;
     if (ok && torrentId) trackDownload(userId, torrentId, 'torrent', name);
 
+    if (ok && torrentId) {
+      const tInfo = await api.getTorrentById(torrentId).catch(() => null);
+      const tItem = Array.isArray(tInfo?.data) ? tInfo.data.find(x => String(x.id) === String(torrentId)) : tInfo?.data || result?.data;
+      const isReady = tItem?.download_finished || tItem?.cached || tItem?.progress >= 1 || (tItem?.download_state && String(tItem.download_state).toLowerCase().includes('complete'));
+
+      if (isReady) {
+        await updateDownloadStatus(userId, torrentId, 'torrent', 'completed', true, name).catch(() => {});
+        const replyMarkup = {
+          inline_keyboard: [
+            [
+              { text: '🔗 Get Link', callback_data: `getlink:torrent:${torrentId}` },
+              { text: '📁 List Files', callback_data: `torrent_files:${torrentId}` }
+            ],
+            [{ text: '📋 View Details', callback_data: `torrent_info:${torrentId}` }]
+          ]
+        };
+        await bot.editMessageText(
+          `⚡ <b>Added from Cache! Ready for Download</b>\n\n` +
+          `📋 <b>Name:</b> ${escapeHtml(name)}\n` +
+          `🆔 <b>Torrent ID:</b> <code>${torrentId}</code>\n\n` +
+          `🎉 <i>Instant download ready! Generating your link…</i>`,
+          { chat_id: chatId, message_id: loading.message_id, parse_mode: 'HTML', reply_markup: replyMarkup }
+        );
+        await handleGetLink(bot, chatId, userId, 'torrent', torrentId);
+        return;
+      }
+    }
+
     const replyMarkup = (ok && torrentId) ? {
       inline_keyboard: [[
         { text: '📋 View Details', callback_data: `torrent_info:${torrentId}` },
@@ -356,11 +428,11 @@ export async function handleAddCached(bot, chatId, input, userId) {
           `📋 <b>Name:</b> ${escapeHtml(name)}\n` +
           `🆔 <b>Torrent ID:</b> <code>${torrentId || 'N/A'}</code>\n\n` +
           `⚡ <i>No waiting — content is cached on TorBox.</i>`
-        : `❌ ${escapeHtml(result?.detail || 'Failed to add')}`,
+        : `❌ ${escapeHtml(result?.detail || result?.error || 'Failed to add')}`,
       { chat_id: chatId, message_id: loading.message_id, parse_mode: 'HTML', reply_markup: replyMarkup }
     );
   } catch (err) {
-    const e = err.response?.data?.detail || err.response?.data?.error || err.message;
+    const e = extractApiError(err);
     await bot.editMessageText(`❌ ${escapeHtml(e)}`, { chat_id: chatId, message_id: loading.message_id, parse_mode: 'HTML' });
   }
 }
@@ -420,6 +492,34 @@ export async function handleAddTorrentFile(bot, chatId, fileBuffer, fileName, us
     const torrentId = result?.data?.torrent_id || result?.data?.id || result?.torrent_id || result?.id;
     if (ok && torrentId) trackDownload(userId, torrentId, 'torrent', name);
 
+    if (ok && torrentId) {
+      const tInfo = await api.getTorrentById(torrentId).catch(() => null);
+      const tItem = Array.isArray(tInfo?.data) ? tInfo.data.find(x => String(x.id) === String(torrentId)) : tInfo?.data || result?.data;
+      const isReady = tItem?.download_finished || tItem?.cached || tItem?.progress >= 1 || (tItem?.download_state && String(tItem.download_state).toLowerCase().includes('complete'));
+
+      if (isReady) {
+        await updateDownloadStatus(userId, torrentId, 'torrent', 'completed', true, name).catch(() => {});
+        const replyMarkup = {
+          inline_keyboard: [
+            [
+              { text: '🔗 Get Link', callback_data: `getlink:torrent:${torrentId}` },
+              { text: '📁 List Files', callback_data: `torrent_files:${torrentId}` }
+            ],
+            [{ text: '📋 View Details', callback_data: `torrent_info:${torrentId}` }]
+          ]
+        };
+        await bot.editMessageText(
+          `⚡ <b>Instant Download Ready! (Cached)</b>\n\n` +
+          `📋 <b>Name:</b> ${escapeHtml(name)}\n` +
+          `🆔 <b>Torrent ID:</b> <code>${torrentId}</code>\n\n` +
+          `🎉 <i>Content is cached on TorBox! Sending your link…</i>`,
+          { chat_id: chatId, message_id: loading.message_id, parse_mode: 'HTML', reply_markup: replyMarkup }
+        );
+        await handleGetLink(bot, chatId, userId, 'torrent', torrentId);
+        return;
+      }
+    }
+
     const replyMarkup = (ok && torrentId) ? {
       inline_keyboard: [[
         { text: '📋 View Details', callback_data: `torrent_info:${torrentId}` },
@@ -433,11 +533,11 @@ export async function handleAddTorrentFile(bot, chatId, fileBuffer, fileName, us
           `📋 <b>Name:</b> ${escapeHtml(name)}\n` +
           `🆔 <b>Torrent ID:</b> <code>${torrentId || 'N/A'}</code>\n\n` +
           `🔄 <i>I will monitor this and auto-notify you when it's ready.</i>`
-        : `❌ ${escapeHtml(result?.detail || 'Failed')}`,
+        : `❌ ${escapeHtml(result?.detail || result?.error || 'Failed')}`,
       { chat_id: chatId, message_id: loading.message_id, parse_mode: 'HTML', reply_markup: replyMarkup }
     );
   } catch (err) {
-    const e = err.response?.data?.detail || err.response?.data?.error || err.message;
+    const e = extractApiError(err);
     await bot.editMessageText(`❌ ${escapeHtml(e)}`, { chat_id: chatId, message_id: loading.message_id, parse_mode: 'HTML' });
   }
 }

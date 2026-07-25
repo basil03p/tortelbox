@@ -3,7 +3,8 @@
 // ============================================================
 import { createApiClient } from '../api.js';
 import { getUserApiKey, getCachedPlan, checkPlanFeature, getPrivateChatId } from '../session.js';
-import { trackDownload, getUserTrackedItemIds, isItemOwnedByUser } from '../db.js';
+import { trackDownload, getUserTrackedItemIds, isItemOwnedByUser, updateDownloadStatus } from '../db.js';
+import { handleGetLink } from '../index.js';
 import {
   formatBytes, formatSpeed, formatEta, formatDate,
   statusEmoji, progressBar, truncate, escapeHtml, extractApiError,
@@ -63,7 +64,7 @@ export async function handleWebDlList(bot, msg, page = 0) {
     ];
     await bot.editMessageText(text, { chat_id: chatId, message_id: loading.message_id, parse_mode: 'HTML', reply_markup: keyboard });
   } catch (err) {
-    const e = err.response?.data?.detail || err.response?.data?.error || err.message;
+    const e = extractApiError(err);
     await bot.editMessageText(`❌ ${escapeHtml(e)}`, { chat_id: chatId, message_id: loading.message_id, parse_mode: 'HTML' });
   }
 }
@@ -100,7 +101,7 @@ export async function handleWebDlInfo(bot, chatId, webdlId, userId) {
     };
     await bot.sendMessage(chatId, text, { parse_mode: 'HTML', reply_markup: keyboard });
   } catch (err) {
-    const e = err.response?.data?.detail || err.response?.data?.error || err.message;
+    const e = extractApiError(err);
     await bot.sendMessage(chatId, `❌ ${escapeHtml(e)}`, { parse_mode: 'HTML' });
   }
 }
@@ -116,7 +117,7 @@ export async function handleWebDlControl(bot, chatId, webdlId, operation, userId
     await bot.editMessageText(`${ok ? '✅' : '❌'} ${escapeHtml(String(result?.detail || result?.data || (ok ? 'Done!' : 'Failed.')))}`,
       { chat_id: chatId, message_id: loading.message_id, parse_mode: 'HTML' });
   } catch (err) {
-    const e = err.response?.data?.detail || err.response?.data?.error || err.message;
+    const e = extractApiError(err);
     await bot.editMessageText(`❌ ${escapeHtml(e)}`, { chat_id: chatId, message_id: loading.message_id, parse_mode: 'HTML' });
   }
 }
@@ -132,7 +133,7 @@ export async function handleWebDlDelete(bot, chatId, webdlId, userId) {
     await bot.editMessageText(`${ok ? '✅ Deleted.' : `❌ ${escapeHtml(result?.detail || 'Failed.')}`}`,
       { chat_id: chatId, message_id: loading.message_id, parse_mode: 'HTML' });
   } catch (err) {
-    const e = err.response?.data?.detail || err.response?.data?.error || err.message;
+    const e = extractApiError(err);
     await bot.editMessageText(`❌ ${escapeHtml(e)}`, { chat_id: chatId, message_id: loading.message_id, parse_mode: 'HTML' });
   }
 }
@@ -164,7 +165,7 @@ export async function handleWebDlDl(bot, chatId, webdlId, fileIdOrZip, userId) {
         { chat_id: targetChat, message_id: loading.message_id, parse_mode: 'HTML' });
     }
   } catch (err) {
-    const e = err.response?.data?.detail || err.response?.data?.error || err.message;
+    const e = extractApiError(err);
     await bot.editMessageText(`❌ ${escapeHtml(e)}`, { chat_id: targetChat, message_id: loading.message_id, parse_mode: 'HTML' });
   }
 }
@@ -181,6 +182,31 @@ export async function handleAddWebDl(bot, chatId, url, userId) {
     const webdlId = result?.data?.webdl_id || result?.data?.id || result?.web_id || result?.id;
     if (ok && webdlId) trackDownload(userId, webdlId, 'webdl', name);
 
+    if (ok && webdlId) {
+      const listData = await api.getWebDlList(true).catch(() => null);
+      const wItem = Array.isArray(listData?.data) ? listData.data.find(x => String(x.id) === String(webdlId)) : result?.data;
+      const isReady = wItem?.download_finished || wItem?.cached || wItem?.progress >= 1 || (wItem?.download_state && String(wItem.download_state).toLowerCase().includes('complete'));
+
+      if (isReady) {
+        await updateDownloadStatus(userId, webdlId, 'webdl', 'completed', true, name).catch(() => {});
+        const replyMarkup = {
+          inline_keyboard: [[
+            { text: '📋 View Details', callback_data: `webdl_info:${webdlId}` },
+            { text: '🔗 Get Link', callback_data: `getlink:webdl:${webdlId}` }
+          ]]
+        };
+        await bot.editMessageText(
+          `⚡ <b>Web Download Ready! (Cached)</b>\n\n` +
+          `🌐 <b>Name:</b> ${escapeHtml(truncate(name, 40))}\n` +
+          `🆔 <b>WebDL ID:</b> <code>${webdlId}</code>\n\n` +
+          `🎉 <i>Instant download ready! Generating your link…</i>`,
+          { chat_id: chatId, message_id: loading.message_id, parse_mode: 'HTML', reply_markup: replyMarkup }
+        );
+        await handleGetLink(bot, chatId, userId, 'webdl', webdlId);
+        return;
+      }
+    }
+
     const replyMarkup = (ok && webdlId) ? {
       inline_keyboard: [[
         { text: '📋 View Details', callback_data: `webdl_info:${webdlId}` },
@@ -194,7 +220,7 @@ export async function handleAddWebDl(bot, chatId, url, userId) {
           `🌐 <b>Name:</b> ${escapeHtml(truncate(name, 40))}\n` +
           `🆔 <b>WebDL ID:</b> <code>${webdlId || 'N/A'}</code>\n\n` +
           `🔄 <i>I will monitor this and auto-notify you when it's ready.</i>`
-        : `❌ ${escapeHtml(result?.detail || 'Failed.')}`,
+        : `❌ ${escapeHtml(result?.detail || result?.error || 'Failed.')}`,
       { chat_id: chatId, message_id: loading.message_id, parse_mode: 'HTML', reply_markup: replyMarkup }
     );
   } catch (err) {

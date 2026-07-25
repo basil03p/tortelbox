@@ -90,6 +90,18 @@ export function extractApiError(err) {
   if (!err) return 'Unknown error';
   const data = err.response?.data;
   if (data) {
+    if (Array.isArray(data.detail)) {
+      return data.detail
+        .map((item) => {
+          if (typeof item === 'string') return item;
+          if (item && item.msg) {
+            const loc = Array.isArray(item.loc) ? item.loc.filter((l) => l !== 'body').join('.') : item.loc;
+            return loc ? `${loc}: ${item.msg}` : item.msg;
+          }
+          return JSON.stringify(item);
+        })
+        .join('; ');
+    }
     if (typeof data.detail === 'string') return data.detail;
     if (data.detail && typeof data.detail === 'object') {
       return data.detail.message || data.detail.error || JSON.stringify(data.detail);

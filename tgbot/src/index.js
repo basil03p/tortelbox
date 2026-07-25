@@ -135,7 +135,7 @@ async function syncUserDownloadsToDb(userId, apiKey) {
 }
 
 // ── /getlink — fresh link on demand ────────────────────────────
-async function handleGetLink(bot, chatId, userId, type, itemId, isExplicitZip = false) {
+export async function handleGetLink(bot, chatId, userId, type, itemId, isExplicitZip = false) {
   const apiKey = getUserApiKey(userId);
   const privateChatId = getPrivateChatId(userId);
 
