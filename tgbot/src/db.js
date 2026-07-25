@@ -401,31 +401,35 @@ export async function clearOldPendingNotifications() {
 export async function markNotified(item) {
   if (!item) return;
   if (mongoDb) {
-    let filter = {};
+    let filter = null;
     if (typeof item === 'object' && item !== null) {
       if (item._id) {
         filter = { _id: item._id };
       } else if (item.user_id && item.item_id) {
-        filter = { user_id: item.user_id, item_id: item.item_id };
+        filter = { user_id: String(item.user_id), item_id: String(item.item_id) };
       } else if (item.id) {
         filter = { id: item.id };
+      } else {
+        filter = { _id: item };
       }
     } else {
       filter = { _id: item };
     }
 
-    const res = await mongoDb.collection('tracked_downloads').updateMany(
-      filter,
-      { $set: { is_done: 1, notified_done: 1 } }
-    ).catch(console.error);
+    if (filter) {
+      const res = await mongoDb.collection('tracked_downloads').updateMany(
+        filter,
+        { $set: { is_done: 1, notified_done: 1 } }
+      ).catch(console.error);
 
-    if (res?.matchedCount > 0) {
-      console.log(`✅ Marked notified in MongoDB (matched ${res.matchedCount} doc)`);
+      if (res?.matchedCount > 0) {
+        console.log(`✅ Marked notified in MongoDB (matched ${res.matchedCount} doc)`);
+      }
     }
     return;
   }
 
-  const idVal = typeof item === 'object' ? item.id : item;
+  const idVal = typeof item === 'object' ? (item.id || item._id) : item;
   db.prepare('UPDATE tracked_downloads SET is_done = 1, notified_done = 1 WHERE id = ? OR (user_id = ? AND item_id = ?)').run(idVal, item?.user_id, item?.item_id);
 }
 

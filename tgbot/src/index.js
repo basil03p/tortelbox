@@ -723,7 +723,14 @@ bot.onText(/\/gofile(?:\s+([a-z]+)\s+(\d+))?/, async (msg, match) => {
 // ACCOUNT COMMANDS
 // =============================================================
 
-bot.onText(/\/me/, (msg) => requireAuth(msg, () => handleMe(bot, msg)));
+bot.onText(/\/me/, (msg) => {
+  const userId = msg.from?.id || msg.chat.id;
+  if (!isAdmin(userId)) {
+    bot.sendMessage(msg.chat.id, '🚫 The /me command is restricted to admin only.');
+    return;
+  }
+  requireAuth(msg, () => handleMe(bot, msg));
+});
 bot.onText(/\/stats/, (msg) => requireAuth(msg, () => handleStats(bot, msg)));
 bot.onText(/\/subscriptions/, (msg) => requireAuth(msg, () => handleSubscriptions(bot, msg)));
 bot.onText(/\/transactions/, (msg) => requireAuth(msg, () => handleTransactions(bot, msg)));
