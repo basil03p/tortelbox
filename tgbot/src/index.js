@@ -39,6 +39,7 @@ import {
   handleWebDlList, handleWebDlInfo, handleWebDlControl, handleWebDlDelete,
   handleWebDlDl, handleAddWebDl,
 } from './handlers/webdl.js';
+import { handleGofileUpload, handleMyGofile } from './handlers/gofile.js';
 import {
   handleMe, handleStats, handleSubscriptions, handleTransactions,
   handleGlobalStats, handleSetKey,
@@ -272,7 +273,10 @@ export async function handleGetLink(bot, chatId, userId, type, itemId, isExplici
           message_id: loading.message_id,
           parse_mode: 'HTML',
           reply_markup: {
-            inline_keyboard: [[{ text: '🔄 Get Fresh Link Again', callback_data: `getlink:${type}:${itemId}` }]],
+            inline_keyboard: [
+              [{ text: '🔄 Get Fresh Link Again', callback_data: `getlink:${type}:${itemId}` }],
+              [{ text: '📤 Upload to Gofile.io ⚡', callback_data: `gofile:${type}:${itemId}` }],
+            ],
           },
         }
       );
@@ -702,6 +706,19 @@ bot.onText(/\/wdl(?:\s+(\d+))?/, async (msg, match) => {
   });
 });
 
+bot.onText(/\/mygofile/, (msg) => requireAuth(msg, () => handleMyGofile(bot, msg)));
+bot.onText(/\/gofile(?:\s+([a-z]+)\s+(\d+))?/, async (msg, match) => {
+  requireAuth(msg, async () => {
+    const type = match?.[1];
+    const id = match?.[2];
+    if (type && id) {
+      await handleGofileUpload(bot, msg.chat.id, msg.from?.id || msg.chat.id, type, id);
+    } else {
+      await handleMyGofile(bot, msg);
+    }
+  });
+});
+
 // =============================================================
 // ACCOUNT COMMANDS
 // =============================================================
@@ -954,6 +971,10 @@ bot.on('callback_query', async (query) => {
     await handleGofileUpload(bot, chatId, userId, parts[1], parts[2]);
     return;
   }
+  if (data === 'mygofile') {
+    await handleMyGofile(bot, fakeMsg);
+    return;
+  }
 
   if (data.startsWith('torrent_list:'))    { await handleTorrentList(bot, fakeMsg, parseInt(data.split(':')[1]) || 0); return; }
   if (data.startsWith('torrent_info:'))    { await handleTorrentInfo(bot, chatId, data.split(':')[1], userId); return; }
@@ -1033,6 +1054,7 @@ bot.setMyCommands([
   { command: 'mydownloads',   description: '📥 My downloads + get links' },
   { command: 'getlink',       description: '🔗 Get fresh download link anytime' },
   { command: 'gofile',        description: '📤 Upload item to Gofile.io' },
+  { command: 'mygofile',      description: '📤 View my Gofile upload history' },
   { command: 'torrents',      description: '🧲 List torrents' },
   { command: 'addmagnet',     description: '➕ Add magnet (auto-notifies when ready)' },
   { command: 'addcached',     description: '⚡ Add torrent (cached only)' },

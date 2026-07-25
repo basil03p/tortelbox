@@ -35,6 +35,7 @@ if (MONGO_URI) {
     await mongoDb.collection('api_keys').createIndex({ user_id: 1 }, { unique: true });
     await mongoDb.collection('private_chats').createIndex({ user_id: 1 }, { unique: true });
     await mongoDb.collection('tracked_downloads').createIndex({ user_id: 1, item_id: 1, type: 1 }, { unique: true });
+    await mongoDb.collection('gofile_uploads').createIndex({ user_id: 1, created_at: -1 });
 
     // Initial cache sync from MongoDB
     const users = await mongoDb.collection('users').find({}).toArray();
@@ -98,6 +99,17 @@ if (!mongoDb) {
 
     CREATE INDEX IF NOT EXISTS idx_tracked_pending
       ON tracked_downloads(is_done, notified_done);
+
+    CREATE TABLE IF NOT EXISTS gofile_uploads (
+      id            INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id       TEXT NOT NULL,
+      type          TEXT NOT NULL,
+      item_id       TEXT NOT NULL,
+      name          TEXT NOT NULL,
+      download_page TEXT NOT NULL,
+      file_id       TEXT,
+      created_at    TEXT NOT NULL DEFAULT (datetime('now'))
+    );
   `);
   console.log(`💾 Database opened: ${DB_PATH}`);
 }
@@ -515,4 +527,44 @@ export async function getStats() {
     active_tracked: db.prepare('SELECT COUNT(*) as c FROM tracked_downloads WHERE is_done=0').get().c,
     done_tracked:   db.prepare('SELECT COUNT(*) as c FROM tracked_downloads WHERE is_done=1').get().c,
   };
+}
+
+export async function saveGofileUpload(userId, type, itemId, name, downloadPage, fileId = null) {
+  const uid = String(userId);
+  const doc = {
+    user_id: uid,
+    type,
+    item_id: String(itemId),
+    name: name || `File #${itemId}`,
+    download_page: downloadPage,
+    file_id: fileId,
+    created_at: new Date().toISOString(),
+  };
+
+  if (mongoDb) {
+    await mongoDb.collection('gofile_uploads').insertOne(doc).catch(console.error);
+    return;
+  }
+  if (db) {
+    db.prepare(`
+      INSERT INTO gofile_uploads (user_id, type, item_id, name, download_page, file_id, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).run(uid, type, String(itemId), doc.name, downloadPage, fileId || null, doc.created_at);
+  }
+}
+
+export async function getUserGofileUploads(userId, limit = 20) {
+  const uid = String(userId);
+  if (mongoDb) {
+    return await mongoDb.collection('gofile_uploads').find({ user_id: uid }).sort({ created_at: -1 }).limit(limit).toArray();
+  }
+  if (db) {
+    return db.prepare(`
+      SELECT * FROM gofile_uploads
+      WHERE user_id = ?
+      ORDER BY created_at DESC
+      LIMIT ?
+    `).all(uid, limit);
+  }
+  return [];
 }

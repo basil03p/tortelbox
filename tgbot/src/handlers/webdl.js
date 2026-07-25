@@ -95,7 +95,10 @@ export async function handleWebDlInfo(bot, chatId, webdlId, userId) {
 
     const keyboard = {
       inline_keyboard: [
-        ...(isReady ? [[{ text: '🔗 Get Link (private)', callback_data: `webdl_dl:${w.id}:zip` }]] : []),
+        ...(isReady ? [
+          [{ text: '🔗 Get Link (private)', callback_data: `webdl_dl:${w.id}:zip` }],
+          [{ text: '📤 Upload to Gofile.io ⚡', callback_data: `gofile:webdl:${w.id}` }],
+        ] : []),
         [{ text: '🗑 Delete', callback_data: `webdl_del:${w.id}:confirm` }, { text: '🔙 Back', callback_data: 'webdl_list:0' }],
       ],
     };

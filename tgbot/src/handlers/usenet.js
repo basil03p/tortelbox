@@ -94,7 +94,10 @@ export async function handleUsenetInfo(bot, chatId, usenetId, userId) {
     const keyboard = {
       inline_keyboard: [
         [{ text: '⏸ Pause', callback_data: `usenet_ctrl:${u.id}:pause` }, { text: '▶ Resume', callback_data: `usenet_ctrl:${u.id}:resume` }],
-        ...(isReady ? [[{ text: '🔗 Get Link (private)', callback_data: `usenet_dl:${u.id}:zip` }]] : []),
+        ...(isReady ? [
+          [{ text: '🔗 Get Link (private)', callback_data: `usenet_dl:${u.id}:zip` }],
+          [{ text: '📤 Upload to Gofile.io ⚡', callback_data: `gofile:usenet:${u.id}` }],
+        ] : []),
         [{ text: '🗑 Delete', callback_data: `usenet_del:${u.id}:confirm` }, { text: '🔙 Back', callback_data: 'usenet_list:0' }],
       ],
     };
