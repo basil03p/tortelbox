@@ -81,11 +81,11 @@ export function createApiClient(apiKey) {
     },
 
     // FIX: token = apiKey (for CDN auth), torrent_id = the actual ID
-    async requestTorrentDl(torrentId, fileId = null, zipLink = false) {
+    async requestTorrentDl(torrentId, fileId = null, zipLink = true) {
       const params = {
         token: apiKey,
         torrent_id: torrentId,
-        zip_link: zipLink,
+        zip_link: zipLink ? 'true' : 'false',
       };
       if (fileId !== null && fileId !== undefined) params.file_id = fileId;
       const r = await client.get('/api/torrents/requestdl', { params });
@@ -136,11 +136,11 @@ export function createApiClient(apiKey) {
     },
 
     // FIX: token = apiKey, usenet_id = the actual ID
-    async requestUsenetDl(usenetId, fileId = null, zipLink = false) {
+    async requestUsenetDl(usenetId, fileId = null, zipLink = true) {
       const params = {
         token: apiKey,
         usenet_id: usenetId,
-        zip_link: zipLink,
+        zip_link: zipLink ? 'true' : 'false',
       };
       if (fileId !== null && fileId !== undefined) params.file_id = fileId;
       const r = await client.get('/api/usenet/requestdl', { params });
@@ -180,11 +180,12 @@ export function createApiClient(apiKey) {
     },
 
     // FIX: token = apiKey, web_id = the actual ID
-    async requestWebDlDl(webdlId, fileId = null, zipLink = false) {
+    async requestWebDlDl(webdlId, fileId = null, zipLink = true) {
       const params = {
         token: apiKey,
         web_id: webdlId,
-        zip_link: zipLink,
+        webdl_id: webdlId,
+        zip_link: zipLink ? 'true' : 'false',
       };
       if (fileId !== null && fileId !== undefined) params.file_id = fileId;
       const r = await client.get('/api/webdl/requestdl', { params });

@@ -255,9 +255,9 @@ export async function handleGetLink(bot, chatId, userId, type, itemId, isExplici
 
     // Default fallback link request
     let result;
-    if (type === 'torrent') result = await api.requestTorrentDl(Number(itemId), null, false);
-    else if (type === 'usenet') result = await api.requestUsenetDl(Number(itemId), null, false);
-    else if (type === 'webdl') result = await api.requestWebDlDl(Number(itemId), null, false);
+    if (type === 'torrent') result = await api.requestTorrentDl(Number(itemId), null, true);
+    else if (type === 'usenet') result = await api.requestUsenetDl(Number(itemId), null, true);
+    else if (type === 'webdl') result = await api.requestWebDlDl(Number(itemId), null, true);
 
     const link = result?.data;
     if (link && typeof link === 'string') {
