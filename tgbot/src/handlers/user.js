@@ -200,18 +200,6 @@ export async function handleGlobalStats(bot, msg) {
 export async function handleSetKey(bot, msg, newKey) {
   const userId = msg.from?.id || msg.chat.id;
   const chatId = msg.chat.id;
-  const adminId = process.env.BOT_ADMIN_ID ? String(process.env.BOT_ADMIN_ID).trim() : null;
-  const isUserAdmin = adminId && String(userId) === adminId;
-
-  if (!isUserAdmin) {
-    await bot.sendMessage(
-      chatId,
-      '🚫 <b>Admin Managed Keys Only</b>\n\n' +
-      'Allowed users cannot set their own API key. An admin must set or assign an API key for your account using <code>/setapikey &lt;user_id&gt; &lt;api_key&gt;</code>.',
-      { parse_mode: 'HTML' }
-    );
-    return;
-  }
 
   if (!newKey || newKey.trim().length < 10) {
     await bot.sendMessage(chatId, '❌ Invalid API key. Usage: <code>/setkey YOUR_API_KEY</code>', { parse_mode: 'HTML' });

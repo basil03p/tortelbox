@@ -485,10 +485,7 @@ bot.onText(/\/start/, async (msg) => {
     `🆔 <b>Your Telegram ID:</b> <code>${userId}</code>\n` +
     `🚀 <b>TorBox Manager Bot</b>\n` +
     (plan !== null ? `🏷 Plan: <b>${escapeHtml(PLAN_LABEL[plan] || `Plan ${plan}`)}</b>\n` : '') +
-    '\n' +
-    (hasKey
-      ? `✅ API key is set!\n\n`
-      : `⚠️ <b>First: set your API key</b>\n<code>/setkey YOUR_API_KEY</code>\n\n`) +
+    '🔑 Key Status: <b>Active & Ready to use</b>\n\n' +
     `<b>📦 Torrents</b>\n` +
     `/torrents — List all\n` +
     `/addmagnet — Add magnet (auto-notifies when ready)\n` +
@@ -501,16 +498,19 @@ bot.onText(/\/start/, async (msg) => {
       : `<b>📰 Usenet & 🌐 WebDL</b> — Requires Essential plan\n\n`) +
     `<b>🔍 Search</b> — /search\n\n` +
     `<b>👤 Account</b> — /me | /stats | /subscriptions\n\n` +
-    `⚙️ /setkey — Set API key | /help — Full commands\n\n` +
+    `⚙️ /setkey — Set personal API key (optional) | /help — Full commands\n\n` +
     `🔐 <b>Download links are sent privately to you only.</b>`,
     { parse_mode: 'HTML' }
   );
 });
 
 bot.onText(/\/help/, (msg) => {
+  const userId = msg.from?.id || msg.chat.id;
   if (msg.from?.id) sessions.delete(msg.from.id);
-  bot.sendMessage(msg.chat.id,
-    `📖 <b>TorBox Bot — Commands</b>\n\n` +
+  const isUserAdmin = isAdmin(userId);
+
+  let helpText =
+    `📖 <b>TorBox Bot — Command Guide</b>\n\n` +
     `<b>🧲 Torrents</b>\n` +
     `/torrents — List (paginated)\n` +
     `/addmagnet &lt;magnet&gt; — Add torrent\n` +
@@ -532,17 +532,32 @@ bot.onText(/\/help/, (msg) => {
     `<b>📡 RSS (Essential+)</b> — /rss | /addrss &lt;url&gt;\n\n` +
     `<b>📋 Queue</b> — /queued\n\n` +
     `<b>🔔 Notifications (Essential+)</b> — /notifications\n\n` +
-    `<b>👤 Account</b>\n` +
+    `<b>👤 Account & Settings</b>\n` +
     `/me — Profile & plan | /stats | /subscriptions\n` +
-    `/transactions | /globalstats\n\n` +
-    `<b>⚙️ Settings</b>\n` +
-    `/setkey &lt;key&gt; — Set API key\n` +
-    `/mykey — Show key (masked)\n\n` +
+    `/setkey &lt;key&gt; — Set personal API key (optional)\n` +
+    `/mykey — Show key\n\n`;
+
+  if (isUserAdmin) {
+    helpText +=
+      `<b>🛡️ Admin Commands (Admin Only)</b>\n` +
+      `/regusers — List all registered users, plans & keys\n` +
+      `/setapikey &lt;user_id&gt; &lt;api_key&gt; — Set/update user API key\n` +
+      `/getkey &lt;user_id&gt; — View user's API key\n` +
+      `/delkey &lt;user_id&gt; — Delete user API key\n` +
+      `/userinfo &lt;user_id&gt; — User breakdown & stats\n` +
+      `/adduser &lt;user_id&gt; — Whitelist/grant user access\n` +
+      `/removeuser &lt;user_id&gt; — Revoke user access\n` +
+      `/listusers — List allowed whitelist users\n` +
+      `/broadcast &lt;message&gt; — Send message to all users\n` +
+      `/adminpanel — Web admin panel link\n\n`;
+  }
+
+  helpText +=
     `<b>🔐 Link Privacy</b>\n` +
-    `All download links → private DM only.\n` +
-    `Links expire in ~1 hour — use /getlink or buttons to refresh.`,
-    { parse_mode: 'HTML' }
-  );
+    `All download links are sent privately to you only.\n` +
+    `Links expire in ~1 hour — use /getlink or buttons to refresh.`;
+
+  bot.sendMessage(msg.chat.id, helpText, { parse_mode: 'HTML' });
 });
 
 // ── /setkey ───────────────────────────────────────────────────
