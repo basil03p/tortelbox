@@ -109,6 +109,55 @@ describe('admin users routes', () => {
     expect(triggerAuthId).toBe(env.authId);
   });
 
+  test('POST /api/admin/users/set-api-key creates or sets an API key', async () => {
+    const res = await request(app)
+      .post('/api/admin/users/set-api-key')
+      .set('x-admin-key', adminKey)
+      .send({ apiKey: 'tb_custom_test_api_key_12345', keyName: 'Test Admin Key' });
+
+    expect(res.status).toBe(200);
+    expect(res.body.success).toBe(true);
+    expect(res.body.api_key).toBe('tb_custom_test_api_key_12345');
+    expect(res.body.key_name).toBe('Test Admin Key');
+    expect(res.body.auth_id).toBeDefined();
+  });
+
+  test('POST /api/admin/users/:authId/revoke-access and grant-access toggles user status', async () => {
+    // Revoke access
+    const revokeRes = await request(app)
+      .post(`/api/admin/users/${env.authId}/revoke-access`)
+      .set('x-admin-key', adminKey)
+      .send();
+
+    expect(revokeRes.status).toBe(200);
+    expect(revokeRes.body.success).toBe(true);
+    expect(revokeRes.body.status).toBe('inactive');
+
+    // Verify user is inactive
+    const getUserRevoked = await request(app)
+      .get(`/api/admin/users/${env.authId}`)
+      .set('x-admin-key', adminKey)
+      .send();
+    expect(getUserRevoked.body.user.status).toBe('inactive');
+
+    // Grant access
+    const grantRes = await request(app)
+      .post(`/api/admin/users/${env.authId}/grant-access`)
+      .set('x-admin-key', adminKey)
+      .send();
+
+    expect(grantRes.status).toBe(200);
+    expect(grantRes.body.success).toBe(true);
+    expect(grantRes.body.status).toBe('active');
+
+    // Verify user is active
+    const getUserGranted = await request(app)
+      .get(`/api/admin/users/${env.authId}`)
+      .set('x-admin-key', adminKey)
+      .send();
+    expect(getUserGranted.body.user.status).toBe('active');
+  });
+
   test('GET /api/admin/users rejects invalid activity filter', async () => {
     const res = await request(app)
       .get('/api/admin/users')

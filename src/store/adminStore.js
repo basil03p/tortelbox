@@ -141,6 +141,45 @@ const useAdminStore = create((set, get) => ({
     }
   },
 
+  async setApiKeyForUser({ apiKey, keyName, authId } = {}) {
+    try {
+      const response = await adminApiClient.setApiKey({ apiKey, keyName, authId });
+      await get().fetchUsers();
+      if (authId && get().selectedUser === authId) {
+        await get().fetchUser(authId);
+      }
+      return { success: true, data: response };
+    } catch (error) {
+      return { success: false, error: error.message };
+    }
+  },
+
+  async grantUserAccess(authId) {
+    try {
+      const response = await adminApiClient.grantUserAccess(authId);
+      await get().fetchUsers();
+      if (get().selectedUser === authId) {
+        await get().fetchUser(authId);
+      }
+      return { success: true, data: response };
+    } catch (error) {
+      return { success: false, error: error.message };
+    }
+  },
+
+  async revokeUserAccess(authId) {
+    try {
+      const response = await adminApiClient.revokeUserAccess(authId);
+      await get().fetchUsers();
+      if (get().selectedUser === authId) {
+        await get().fetchUser(authId);
+      }
+      return { success: true, data: response };
+    } catch (error) {
+      return { success: false, error: error.message };
+    }
+  },
+
   async updateUserUploadTier(authId, tier) {
     try {
       await adminApiClient.updateUserUploadTier(authId, tier);

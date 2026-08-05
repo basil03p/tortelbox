@@ -19,6 +19,7 @@ import {
   adminTableClass,
   adminTheadClass,
 } from './AdminUi';
+import SetApiKeyModal from './SetApiKeyModal';
 import { formatLastSeen } from '@/utils/formatLastSeen';
 
 const userThClass =
@@ -65,16 +66,20 @@ export default function UserList({
   sortDirection = 'desc',
   onUsersUpdated,
 }) {
-  const { deleteUser, updateUserStatus, fetchUsers } = useAdminStore(
+  const { deleteUser, updateUserStatus, grantUserAccess, revokeUserAccess, fetchUsers } = useAdminStore(
     useShallow((s) => ({
       deleteUser: s.deleteUser,
       updateUserStatus: s.updateUserStatus,
+      grantUserAccess: s.grantUserAccess,
+      revokeUserAccess: s.revokeUserAccess,
       fetchUsers: s.fetchUsers,
     }))
   );
   const [deleting, setDeleting] = useState(null);
   const [reactivating, setReactivating] = useState(false);
   const [searchValue, setSearchValue] = useState(filters?.search || '');
+  const [modalOpen, setModalOpen] = useState(false);
+  const [modalAuthId, setModalAuthId] = useState(null);
   const { confirm, ConfirmDialog } = useConfirmDialog({ cancelLabel: 'Cancel' });
   const { alert, AppAlert } = useAppAlert();
 
@@ -146,6 +151,12 @@ export default function UserList({
     }
   };
 
+  const handleOpenSetKeyModal = (authId = null, e = null) => {
+    if (e) e.stopPropagation();
+    setModalAuthId(authId);
+    setModalOpen(true);
+  };
+
   return (
     <div className="space-y-4">
       <AdminCard bodyClassName="!py-4">
@@ -160,6 +171,14 @@ export default function UserList({
             />
           </form>
           <div className="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              onClick={(e) => handleOpenSetKeyModal(null, e)}
+              className="ui-btn-accent shrink-0 text-xs px-3 py-1.5"
+              title="Set or generate a new API key for a user"
+            >
+              + Set API Key
+            </button>
             <AdminFilterChip active={!filters?.status} onClick={() => onStatusFilter('all')}>
               All
             </AdminFilterChip>
@@ -437,11 +456,19 @@ export default function UserList({
                         <div className="flex justify-end gap-1.5">
                           <button
                             type="button"
+                            onClick={(e) => handleOpenSetKeyModal(user.auth_id, e)}
+                            className="text-xs font-medium text-accent hover:underline dark:text-accent-dark"
+                            title="Set or generate API key for this user"
+                          >
+                            Set Key
+                          </button>
+                          <button
+                            type="button"
                             onClick={(e) => handleStatusChange(user.auth_id, user.status, e)}
                             className="text-xs font-medium text-accent hover:underline dark:text-accent-dark"
-                            title={user.status === 'active' ? 'Deactivate user' : 'Activate user'}
+                            title={user.status === 'active' ? 'Revoke user access' : 'Grant user access'}
                           >
-                            {user.status === 'active' ? 'Disable' : 'Enable'}
+                            {user.status === 'active' ? 'Revoke' : 'Grant'}
                           </button>
                           <button
                             type="button"
@@ -498,6 +525,12 @@ export default function UserList({
           </div>
         )}
       </div>
+      <SetApiKeyModal
+        isOpen={modalOpen}
+        onClose={() => setModalOpen(false)}
+        initialAuthId={modalAuthId}
+        onKeySet={() => fetchUsers(filters)}
+      />
       <ConfirmDialog />
       <AppAlert />
     </div>

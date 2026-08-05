@@ -35,6 +35,7 @@ import { setupLinkHistoryRoutes } from './routes/linkHistory.js';
 import UploadQuotaService from './services/UploadQuotaService.js';
 import ActivityTracker from './services/ActivityTracker.js';
 import { setupActivityRoutes } from './routes/activity.js';
+import { initMongo } from './database/mongo.js';
 
 class TorBoxBackend {
   constructor() {
@@ -294,6 +295,9 @@ class TorBoxBackend {
       // Initialize master database
       await this.masterDatabase.initialize();
       logger.info('Master database initialized');
+
+      // Initialize MongoDB if configured
+      await initMongo();
 
       // Initialize user database manager
       const userDbDir = getUserDbDir();

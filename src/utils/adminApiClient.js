@@ -135,6 +135,25 @@ class AdminApiClient {
     });
   }
 
+  async setApiKey({ apiKey, keyName, authId } = {}) {
+    return this.request('/users/set-api-key', {
+      method: 'POST',
+      body: JSON.stringify({ apiKey, keyName, authId }),
+    });
+  }
+
+  async grantUserAccess(authId) {
+    return this.request(`/users/${authId}/grant-access`, {
+      method: 'POST',
+    });
+  }
+
+  async revokeUserAccess(authId) {
+    return this.request(`/users/${authId}/revoke-access`, {
+      method: 'POST',
+    });
+  }
+
   async updateUserUploadTier(authId, tier) {
     return this.request(`/users/${authId}/upload-tier`, {
       method: 'PUT',

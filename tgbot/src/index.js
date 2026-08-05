@@ -768,6 +768,20 @@ bot.onText(/\/clearnotifs/, async (msg) => requireAuth(msg, async () => handleCl
 // ADMIN COMMANDS (BOT_ADMIN_ID only)
 // =============================================================
 
+bot.onText(/\/setapikey(?:\s+(\d+)\s+(.+))?/, async (msg, match) => {
+  const userId = msg.from?.id;
+  const chatId = msg.chat.id;
+  if (!isAdmin(userId)) { bot.sendMessage(chatId, '🚫 Admin only.'); return; }
+  const targetId = match?.[1];
+  const apiKey = match?.[2]?.trim();
+  if (!targetId || !apiKey) {
+    bot.sendMessage(chatId, '❌ Usage: <code>/setapikey &lt;user_id&gt; &lt;api_key&gt;</code>', { parse_mode: 'HTML' });
+    return;
+  }
+  setUserApiKey(targetId, apiKey);
+  bot.sendMessage(chatId, `🔑 API key updated for user <code>${targetId}</code> and stored in database.`, { parse_mode: 'HTML' });
+});
+
 bot.onText(/\/adduser(?:\s+(\d+))?/, async (msg, match) => {
   const userId = msg.from?.id;
   const chatId = msg.chat.id;

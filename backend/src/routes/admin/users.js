@@ -31,10 +31,122 @@ function attachUploadQuotaFields(user, uploadQuotaService) {
   };
 }
 
+import crypto from 'crypto';
+import {
+  registerApiKeyMongo,
+  grantUserAccessMongo,
+  revokeUserAccessMongo,
+  updateUserStatusMongo,
+} from '../../database/mongo.js';
+
+function generateRandomApiKey() {
+  return 'tb_' + crypto.randomBytes(16).toString('hex');
+}
+
 /**
  * User Management Routes
  */
 export function setupUserRoutes(router, backend) {
+  // Set / Create API key for user (admin feature with MongoDB & SQLite persistence)
+  router.post(
+    '/users/set-api-key',
+    asyncHandler(async (req, res) => {
+      const { apiKey: inputApiKey, keyName, authId: targetAuthId } = req.body || {};
+      const apiKey = inputApiKey && inputApiKey.trim() ? inputApiKey.trim() : generateRandomApiKey();
+      const name = keyName && keyName.trim() ? keyName.trim() : null;
+
+      logger.info('Admin setting API key for user', {
+        hasCustomKey: Boolean(inputApiKey),
+        keyName: name,
+        adminIp: req.ip,
+      });
+
+      // Register key in SQLite master database
+      const result = await backend.masterDatabase.registerApiKey(apiKey, name);
+
+      // Register/upsert in MongoDB Atlas if enabled
+      try {
+        await registerApiKeyMongo(apiKey, name);
+      } catch (err) {
+        logger.warn('Failed to sync API key to MongoDB', { error: err.message });
+      }
+
+      // Invalidate cache
+      const cache = (await import('../../utils/cache.js')).default;
+      cache.invalidateUserRegistry(result.authId);
+      cache.invalidateActiveUsers();
+
+      sendSuccess(res, {
+        message: 'API key set successfully',
+        auth_id: result.authId,
+        api_key: apiKey,
+        key_name: name,
+        was_new: result.wasNew,
+      });
+    })
+  );
+
+  // Grant access to a user
+  router.post(
+    '/users/:authId/grant-access',
+    asyncHandler(async (req, res) => {
+      const authId = validateAuthIdParam(req, res);
+      if (!authId) return;
+
+      logger.info('Admin granting access to user', { authId, adminIp: req.ip });
+
+      // Update in SQLite
+      backend.masterDatabase.updateUserStatus(authId, 'active');
+
+      // Update in MongoDB
+      try {
+        await grantUserAccessMongo(authId);
+      } catch (err) {
+        logger.warn('Failed to sync grant-access to MongoDB', { authId, error: err.message });
+      }
+
+      const cache = (await import('../../utils/cache.js')).default;
+      cache.invalidateUserRegistry(authId);
+      cache.invalidateActiveUsers();
+
+      sendSuccess(res, {
+        message: 'Access granted successfully',
+        auth_id: authId,
+        status: 'active',
+      });
+    })
+  );
+
+  // Revoke access from a user
+  router.post(
+    '/users/:authId/revoke-access',
+    asyncHandler(async (req, res) => {
+      const authId = validateAuthIdParam(req, res);
+      if (!authId) return;
+
+      logger.info('Admin revoking access from user', { authId, adminIp: req.ip });
+
+      // Update in SQLite
+      backend.masterDatabase.updateUserStatus(authId, 'inactive');
+
+      // Update in MongoDB
+      try {
+        await revokeUserAccessMongo(authId);
+      } catch (err) {
+        logger.warn('Failed to sync revoke-access to MongoDB', { authId, error: err.message });
+      }
+
+      const cache = (await import('../../utils/cache.js')).default;
+      cache.invalidateUserRegistry(authId);
+      cache.invalidateActiveUsers();
+
+      sendSuccess(res, {
+        message: 'Access revoked successfully',
+        auth_id: authId,
+        status: 'inactive',
+      });
+    })
+  );
   // Get all users with pagination and filtering
   router.get(
     '/users',
@@ -408,6 +520,13 @@ export function setupUserRoutes(router, backend) {
 
       // Update status (syncs both user_registry.status and api_keys.is_active)
       backend.masterDatabase.updateUserStatus(authId, status);
+
+      // Sync status to MongoDB
+      try {
+        await updateUserStatusMongo(authId, status);
+      } catch (err) {
+        logger.warn('Failed to sync status update to MongoDB', { authId, error: err.message });
+      }
 
       // Invalidate cache
       const cache = (await import('../../utils/cache.js')).default;

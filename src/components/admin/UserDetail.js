@@ -8,16 +8,22 @@ import { AdminBadge, AdminCard, AdminLoading, AdminStatRow } from './AdminUi';
 import { useConfirmDialog } from '@/hooks/useConfirmDialog';
 import { useAppAlert } from '@/hooks/useAppAlert';
 
+import SetApiKeyModal from './SetApiKeyModal';
+
 export default function UserDetail({ user }) {
   const [databaseInfo, setDatabaseInfo] = useState(null);
   const [automationInfo, setAutomationInfo] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [modalOpen, setModalOpen] = useState(false);
   const { confirm, ConfirmDialog } = useConfirmDialog({ cancelLabel: 'Cancel' });
   const { alert, AppAlert } = useAppAlert();
-  const { updateUserStatus, updateUserUploadTier } = useAdminStore(
+  const { updateUserStatus, updateUserUploadTier, grantUserAccess, revokeUserAccess, fetchUser } = useAdminStore(
     useShallow((s) => ({
       updateUserStatus: s.updateUserStatus,
       updateUserUploadTier: s.updateUserUploadTier,
+      grantUserAccess: s.grantUserAccess,
+      revokeUserAccess: s.revokeUserAccess,
+      fetchUser: s.fetchUser,
     }))
   );
 
@@ -72,15 +78,24 @@ export default function UserDetail({ user }) {
       <AdminCard
         title="User information"
         action={
-          <button
-            type="button"
-            onClick={handleStatusChange}
-            className={
-              user.status === 'active' ? 'ui-btn-ghost text-label-danger-text' : 'ui-btn-accent'
-            }
-          >
-            {user.status === 'active' ? 'Deactivate' : 'Activate'}
-          </button>
+          <div className="flex gap-2">
+            <button
+              type="button"
+              onClick={() => setModalOpen(true)}
+              className="ui-btn-accent text-xs px-3 py-1.5"
+            >
+              🔑 Set API Key
+            </button>
+            <button
+              type="button"
+              onClick={handleStatusChange}
+              className={
+                user.status === 'active' ? 'ui-btn-ghost text-label-danger-text' : 'ui-btn-accent'
+              }
+            >
+              {user.status === 'active' ? 'Revoke Access' : 'Grant Access'}
+            </button>
+          </div>
         }
       >
         <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
@@ -200,6 +215,12 @@ export default function UserDetail({ user }) {
           </div>
         </AdminCard>
       ) : null}
+      <SetApiKeyModal
+        isOpen={modalOpen}
+        onClose={() => setModalOpen(false)}
+        initialAuthId={user.auth_id}
+        onKeySet={() => fetchUser(user.auth_id)}
+      />
       <ConfirmDialog />
       <AppAlert />
     </div>
