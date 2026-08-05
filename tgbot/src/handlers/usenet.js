@@ -29,7 +29,7 @@ export async function handleUsenetList(bot, msg, page = 0) {
   try {
     const api = createApiClient(apiKey);
     const data = await api.getUsenetList();
-    const userItemIds = getUserTrackedItemIds(userId, 'usenet');
+    const userItemIds = await getUserTrackedItemIds(userId, 'usenet');
     const adminId = process.env.BOT_ADMIN_ID ? String(process.env.BOT_ADMIN_ID).trim() : null;
     const isUserAdmin = adminId && String(userId) === adminId;
 

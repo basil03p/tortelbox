@@ -30,7 +30,7 @@ export async function handleWebDlList(bot, msg, page = 0) {
   try {
     const api = createApiClient(apiKey);
     const data = await api.getWebDlList();
-    const userItemIds = getUserTrackedItemIds(userId, 'webdl');
+    const userItemIds = await getUserTrackedItemIds(userId, 'webdl');
     const adminId = process.env.BOT_ADMIN_ID ? String(process.env.BOT_ADMIN_ID).trim() : null;
     const isUserAdmin = adminId && String(userId) === adminId;
 

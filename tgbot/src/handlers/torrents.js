@@ -23,7 +23,7 @@ export async function handleTorrentList(bot, msg, page = 0) {
   try {
     const api = createApiClient(apiKey);
     const data = await api.getTorrentList();
-    const userItemIds = getUserTrackedItemIds(userId, 'torrent');
+    const userItemIds = await getUserTrackedItemIds(userId, 'torrent');
     const adminId = process.env.BOT_ADMIN_ID ? String(process.env.BOT_ADMIN_ID).trim() : null;
     const isUserAdmin = adminId && String(userId) === adminId;
 
