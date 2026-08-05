@@ -20,7 +20,7 @@ import {
   checkPlanFeature,
 } from './session.js';
 
-import { upsertUser, trackDownload, isItemOwnedByUser } from './db.js';
+import { upsertUser, trackDownload, isItemOwnedByUser, getAllRegisteredUsers, getUserDetailedInfo } from './db.js';
 import { createApiClient, extractHashFromMagnet, isInfohash } from './api.js';
 import { escapeHtml, truncate, formatBytes, statusEmoji, progressBar } from './utils.js';
 import { startMonitor } from './monitor.js';
@@ -767,6 +767,79 @@ bot.onText(/\/clearnotifs/, async (msg) => requireAuth(msg, async () => handleCl
 // =============================================================
 // ADMIN COMMANDS (BOT_ADMIN_ID only)
 // =============================================================
+
+bot.onText(/\/regusers/, async (msg) => {
+  const userId = msg.from?.id;
+  const chatId = msg.chat.id;
+  if (!isAdmin(userId)) { bot.sendMessage(chatId, '🚫 Admin only.'); return; }
+  const users = await getAllRegisteredUsers();
+  if (!users.length) {
+    bot.sendMessage(chatId, '📭 No registered users found in MongoDB database.', { parse_mode: 'HTML' });
+    return;
+  }
+
+  const PLAN_NAMES = { 0: 'Free', 1: 'Essential', 2: 'Pro', 3: 'Ultimate' };
+
+  let text = `👥 <b>Registered Users (Admin Only)</b> (${users.length})\n\n`;
+  for (const u of users) {
+    const statusStr = u.is_allowed ? '✅ Allowed' : '🚫 Revoked';
+    const planStr = PLAN_NAMES[u.plan] || (u.plan != null ? `Plan ${u.plan}` : 'Default');
+    const maskedKey = u.api_key ? `<code>${u.api_key.slice(0, 6)}...${u.api_key.slice(-4)}</code>` : '<i>None</i>';
+    const nameStr = u.username ? `@${escapeHtml(u.username)}` : escapeHtml(u.first_name || 'Anonymous');
+
+    text += `• <b>ID:</b> <code>${u.user_id}</code> (${nameStr})\n`;
+    text += `  └ Status: ${statusStr} | Plan: ${planStr}\n`;
+    text += `  └ API Key: ${maskedKey}\n\n`;
+  }
+
+  text += `💡 <i>Use <code>/getkey &lt;user_id&gt;</code> to view full API key.</i>\n`;
+  text += `💡 <i>Use <code>/userinfo &lt;user_id&gt;</code> for full user breakdown.</i>`;
+
+  bot.sendMessage(chatId, text, { parse_mode: 'HTML' });
+});
+
+bot.onText(/\/getkey(?:\s+(\d+))?/, async (msg, match) => {
+  const userId = msg.from?.id;
+  const chatId = msg.chat.id;
+  if (!isAdmin(userId)) { bot.sendMessage(chatId, '🚫 Admin only.'); return; }
+  const targetId = match?.[1];
+  if (!targetId) {
+    bot.sendMessage(chatId, '❌ Usage: <code>/getkey &lt;telegram_id&gt;</code>', { parse_mode: 'HTML' });
+    return;
+  }
+  const key = getUserApiKey(targetId);
+  if (!key) {
+    bot.sendMessage(chatId, `📭 No API key found for user <code>${targetId}</code>.`, { parse_mode: 'HTML' });
+    return;
+  }
+  bot.sendMessage(chatId, `🔑 <b>API Key for User <code>${targetId}</code> (Admin Only):</b>\n\n<code>${key}</code>`, { parse_mode: 'HTML' });
+});
+
+bot.onText(/\/userinfo(?:\s+(\d+))?/, async (msg, match) => {
+  const userId = msg.from?.id;
+  const chatId = msg.chat.id;
+  if (!isAdmin(userId)) { bot.sendMessage(chatId, '🚫 Admin only.'); return; }
+  const targetId = match?.[1];
+  if (!targetId) {
+    bot.sendMessage(chatId, '❌ Usage: <code>/userinfo &lt;telegram_id&gt;</code>', { parse_mode: 'HTML' });
+    return;
+  }
+  const info = await getUserDetailedInfo(targetId);
+  const PLAN_NAMES = { 0: 'Free', 1: 'Essential', 2: 'Pro', 3: 'Ultimate' };
+  const planStr = PLAN_NAMES[info.plan] || (info.plan != null ? `Plan ${info.plan}` : 'Default');
+  const statusStr = info.is_allowed ? '✅ Allowed' : '🚫 Revoked';
+  const nameStr = info.username ? `@${escapeHtml(info.username)}` : escapeHtml(info.first_name || 'N/A');
+
+  let text = `👤 <b>User Info: <code>${info.user_id}</code></b>\n\n`;
+  text += `• <b>Name:</b> ${nameStr}\n`;
+  text += `• <b>Status:</b> ${statusStr}\n`;
+  text += `• <b>Plan:</b> ${planStr}\n`;
+  text += `• <b>API Key:</b> ${info.api_key ? `<code>${info.api_key}</code>` : '<i>Not Set</i>'}\n`;
+  text += `• <b>Total Downloads Tracked:</b> ${info.trackedCount} (${info.activeTracked} active, ${info.doneTracked} done)\n`;
+  text += `• <b>Gofile Uploads:</b> ${info.gofileCount}\n`;
+
+  bot.sendMessage(chatId, text, { parse_mode: 'HTML' });
+});
 
 bot.onText(/\/setapikey(?:\s+(\d+)\s+(.+))?/, async (msg, match) => {
   const userId = msg.from?.id;

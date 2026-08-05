@@ -222,6 +222,86 @@ export function listAllowedUsers() {
   `).all();
 }
 
+/**
+ * Get all registered users for admin (/regusers command)
+ */
+export async function getAllRegisteredUsers() {
+  if (mongoDb) {
+    const users = await mongoDb.collection('users').find({}).toArray();
+    const keys = await mongoDb.collection('api_keys').find({}).toArray();
+    const keyMap = new Map();
+    keys.forEach((k) => keyMap.set(String(k.user_id), k));
+
+    return users.map((u) => {
+      const uid = String(u.user_id);
+      const k = keyMap.get(uid) || {};
+      return {
+        user_id: uid,
+        username: u.username || null,
+        first_name: u.first_name || null,
+        is_allowed: u.is_allowed === 1 || u.is_allowed === true ? 1 : 0,
+        added_by: u.added_by || null,
+        added_at: u.added_at || u.created_at || null,
+        api_key: k.api_key || null,
+        plan: k.plan ?? null,
+      };
+    });
+  }
+
+  if (db) {
+    return db.prepare(`
+      SELECT u.user_id, u.username, u.first_name, u.is_allowed, u.added_by, u.added_at, k.api_key, k.plan
+      FROM users u
+      LEFT JOIN api_keys k ON k.user_id = u.user_id
+      ORDER BY u.added_at DESC
+    `).all();
+  }
+  return [];
+}
+
+/**
+ * Get detailed breakdown for a single user
+ */
+export async function getUserDetailedInfo(userId) {
+  const uid = String(userId);
+  let user = null;
+  let apiKeyInfo = null;
+  let trackedCount = 0;
+  let activeTracked = 0;
+  let doneTracked = 0;
+  let gofileCount = 0;
+
+  if (mongoDb) {
+    user = await mongoDb.collection('users').findOne({ user_id: uid });
+    apiKeyInfo = await mongoDb.collection('api_keys').findOne({ user_id: uid });
+    trackedCount = await mongoDb.collection('tracked_downloads').countDocuments({ user_id: uid });
+    activeTracked = await mongoDb.collection('tracked_downloads').countDocuments({ user_id: uid, is_done: 0 });
+    doneTracked = await mongoDb.collection('tracked_downloads').countDocuments({ user_id: uid, is_done: 1 });
+    gofileCount = await mongoDb.collection('gofile_uploads').countDocuments({ user_id: uid });
+  } else if (db) {
+    user = db.prepare('SELECT * FROM users WHERE user_id = ?').get(uid);
+    apiKeyInfo = db.prepare('SELECT * FROM api_keys WHERE user_id = ?').get(uid);
+    trackedCount = db.prepare('SELECT COUNT(*) as c FROM tracked_downloads WHERE user_id = ?').get(uid)?.c || 0;
+    activeTracked = db.prepare('SELECT COUNT(*) as c FROM tracked_downloads WHERE user_id = ? AND is_done = 0').get(uid)?.c || 0;
+    doneTracked = db.prepare('SELECT COUNT(*) as c FROM tracked_downloads WHERE user_id = ? AND is_done = 1').get(uid)?.c || 0;
+    gofileCount = db.prepare('SELECT COUNT(*) as c FROM gofile_uploads WHERE user_id = ?').get(uid)?.c || 0;
+  }
+
+  return {
+    user_id: uid,
+    username: user?.username || null,
+    first_name: user?.first_name || null,
+    is_allowed: user?.is_allowed === 1 || user?.is_allowed === true ? 1 : 0,
+    added_at: user?.added_at || null,
+    api_key: apiKeyInfo?.api_key || null,
+    plan: apiKeyInfo?.plan ?? null,
+    trackedCount,
+    activeTracked,
+    doneTracked,
+    gofileCount,
+  };
+}
+
 export function isOpenAccess() {
   if (mongoDb) {
     for (const [, u] of userCache.entries()) {
