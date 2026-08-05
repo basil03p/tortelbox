@@ -319,16 +319,30 @@ export function isOpenAccess() {
 
 export function getUserApiKey(userId) {
   const uid = String(userId);
+  const adminId = process.env.BOT_ADMIN_ID ? String(process.env.BOT_ADMIN_ID).trim() : null;
+
+  let key = null;
   if (mongoDb) {
     const cached = apiKeyCache.get(uid);
-    return cached?.api_key || process.env.TORBOX_API_KEY || null;
+    key = cached?.api_key || null;
+  } else {
+    const row = db.prepare('SELECT api_key FROM api_keys WHERE user_id = ?').get(uid);
+    key = row?.api_key || null;
   }
-  const row = db.prepare('SELECT api_key FROM api_keys WHERE user_id = ?').get(uid);
-  return row?.api_key || process.env.TORBOX_API_KEY || null;
+
+  // System fallback to process.env.TORBOX_API_KEY ONLY for the bot admin
+  if (!key && adminId && uid === adminId) {
+    key = process.env.TORBOX_API_KEY || null;
+  }
+
+  return key;
 }
 
 export function setUserApiKey(userId, apiKey, plan = null) {
   const uid = String(userId);
+  // Remove existing cached key entry for this user to ensure complete overwrite
+  apiKeyCache.delete(uid);
+
   const kData = { user_id: uid, api_key: apiKey, plan, updated_at: new Date().toISOString() };
   apiKeyCache.set(uid, kData);
 
@@ -345,6 +359,17 @@ export function setUserApiKey(userId, apiKey, plan = null) {
     VALUES (?, ?, ?)
     ON CONFLICT(user_id) DO UPDATE SET api_key = excluded.api_key, plan = excluded.plan, updated_at = datetime('now')
   `).run(uid, apiKey, plan);
+}
+
+export function removeUserApiKey(userId) {
+  const uid = String(userId);
+  apiKeyCache.delete(uid);
+
+  if (mongoDb) {
+    mongoDb.collection('api_keys').deleteOne({ user_id: uid }).catch(console.error);
+    return;
+  }
+  db.prepare('DELETE FROM api_keys WHERE user_id = ?').run(uid);
 }
 
 export function hasApiKey(userId) {

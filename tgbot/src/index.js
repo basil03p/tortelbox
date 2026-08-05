@@ -14,7 +14,7 @@ import 'dotenv/config';
 import TelegramBot from 'node-telegram-bot-api';
 
 import {
-  getUserApiKey, setUserApiKey, hasApiKey, sessions,
+  getUserApiKey, setUserApiKey, removeUserApiKey, hasApiKey, sessions,
   setPrivateChatId, getPrivateChatId, setCachedPlan, getCachedPlan,
   isUserAllowed, addAllowedUser, removeAllowedUser, listAllowedUsers, isOpenAccess,
   checkPlanFeature,
@@ -851,8 +851,51 @@ bot.onText(/\/setapikey(?:\s+(\d+)\s+(.+))?/, async (msg, match) => {
     bot.sendMessage(chatId, '❌ Usage: <code>/setapikey &lt;user_id&gt; &lt;api_key&gt;</code>', { parse_mode: 'HTML' });
     return;
   }
-  setUserApiKey(targetId, apiKey);
-  bot.sendMessage(chatId, `🔑 API key updated for user <code>${targetId}</code> and stored in database.`, { parse_mode: 'HTML' });
+
+  const loading = await bot.sendMessage(chatId, `🔑 Validating and setting API key for user <code>${targetId}</code>…`, { parse_mode: 'HTML' });
+  try {
+    const api = createApiClient(apiKey);
+    const result = await api.getMe();
+    const plan = result?.data?.plan ?? null;
+
+    // Overwrite previous API key in MongoDB / cache and save new key
+    setUserApiKey(targetId, apiKey, plan);
+    if (plan != null) setCachedPlan(targetId, plan);
+    addAllowedUser(targetId, userId);
+
+    const PLAN_NAMES = { 0: 'Free', 1: 'Essential', 2: 'Pro', 3: 'Ultimate' };
+    const planLabel = PLAN_NAMES[plan] || (plan != null ? `Plan ${plan}` : 'Default');
+
+    await bot.editMessageText(
+      `✅ <b>API Key Updated for User <code>${targetId}</code></b>\n\n` +
+      `🗑 <i>Previous API key removed from MongoDB.</i>\n` +
+      `🔑 <i>New API key set & saved to MongoDB.</i>\n` +
+      `🏷 Plan: <b>${escapeHtml(planLabel)}</b>\n` +
+      `👥 User whitelist status: <b>Allowed</b>`,
+      { chat_id: chatId, message_id: loading.message_id, parse_mode: 'HTML' }
+    );
+  } catch (err) {
+    // Overwrite previous key even if API check fails
+    setUserApiKey(targetId, apiKey);
+    addAllowedUser(targetId, userId);
+    await bot.editMessageText(
+      `✅ API key set for user <code>${targetId}</code> in MongoDB (Previous key replaced).`,
+      { chat_id: chatId, message_id: loading.message_id, parse_mode: 'HTML' }
+    );
+  }
+});
+
+bot.onText(/\/delkey(?:\s+(\d+))?/, async (msg, match) => {
+  const userId = msg.from?.id;
+  const chatId = msg.chat.id;
+  if (!isAdmin(userId)) { bot.sendMessage(chatId, '🚫 Admin only.'); return; }
+  const targetId = match?.[1];
+  if (!targetId) {
+    bot.sendMessage(chatId, '❌ Usage: <code>/delkey &lt;telegram_id&gt;</code>', { parse_mode: 'HTML' });
+    return;
+  }
+  removeUserApiKey(targetId);
+  bot.sendMessage(chatId, `🗑 API key completely removed for user <code>${targetId}</code> in MongoDB.`, { parse_mode: 'HTML' });
 });
 
 bot.onText(/\/adduser(?:\s+(\d+))?/, async (msg, match) => {

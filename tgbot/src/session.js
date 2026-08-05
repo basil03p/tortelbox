@@ -6,7 +6,7 @@
 // Re-export everything from db.js so existing code still works
 export {
   isUserAllowed, addAllowedUser, removeAllowedUser, listAllowedUsers, isOpenAccess,
-  getUserApiKey, setUserApiKey, hasApiKey,
+  getUserApiKey, setUserApiKey, removeUserApiKey, hasApiKey,
   setCachedPlan, getCachedPlan,
   setPrivateChatId, getPrivateChatId,
 } from './db.js';
