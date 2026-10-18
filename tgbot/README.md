@@ -67,7 +67,7 @@ npm run dev
 | `/status` | | Display active downloads across all engines (progress, speed, ETA) |
 | `/debrid` | `<url>` | Unrestrict and download premium hoster links |
 | `/mydownloads` | | View recent tracked downloads with one-tap link generation |
-| `/getlink` | `[type] [id]` | Request a fresh, private CDN download link |
+| `/getlink` | `<id>` | Request a fresh, private CDN download link |
 | `/torrents` | | List torrent downloads (paginated) |
 | `/addmagnet` | `<magnet>` | Add torrent via magnet URI |
 | `/addcached` | `<hash/magnet>` | Add torrent strictly if present in TorBox cache |

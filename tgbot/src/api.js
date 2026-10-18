@@ -1,5 +1,6 @@
 import 'dotenv/config';
 import axios from 'axios';
+import { cleanApiKey } from './db.js';
 
 // ============================================================
 // TorBox API Client — Direct API calls (no backend required)
@@ -10,10 +11,11 @@ const API_VERSION = process.env.TORBOX_API_VERSION || 'v1';
 const API_ROOT = `${BASE_URL}/${API_VERSION}`;
 
 export function createApiClient(apiKey) {
+  const token = cleanApiKey(apiKey);
   const client = axios.create({
     baseURL: API_ROOT,
     headers: {
-      Authorization: `Bearer ${apiKey}`,
+      Authorization: `Bearer ${token}`,
       'Content-Type': 'application/json',
       'User-Agent': 'TorBox-TelegramBot/1.0.0',
     },
@@ -66,7 +68,10 @@ export function createApiClient(apiKey) {
       if (name) form.append('name', name);
 
       const r = await client.post('/api/torrents/createtorrent', form, {
-        headers: form.getHeaders(),
+        headers: {
+          ...form.getHeaders(),
+          Authorization: `Bearer ${token}`,
+        },
         timeout: 60000,
       });
       return r.data;
@@ -83,7 +88,7 @@ export function createApiClient(apiKey) {
     // FIX: token = apiKey (for CDN auth), torrent_id = the actual ID
     async requestTorrentDl(torrentId, fileId = null, zipLink = true) {
       const params = {
-        token: apiKey,
+        token,
         torrent_id: torrentId,
         zip_link: zipLink ? 'true' : 'false',
       };
@@ -134,7 +139,10 @@ export function createApiClient(apiKey) {
       }
 
       const r = await client.post('/api/usenet/createusenetdownload', form, {
-        headers: form.getHeaders(),
+        headers: {
+          ...form.getHeaders(),
+          Authorization: `Bearer ${token}`,
+        },
         timeout: 60000,
       });
       return r.data;
@@ -150,7 +158,7 @@ export function createApiClient(apiKey) {
 
     async requestUsenetDl(usenetId, fileId = null, zipLink = false) {
       const params = {
-        token: apiKey,
+        token,
         usenet_id: usenetId,
       };
       if (zipLink) params.zip_link = 'true';
@@ -177,7 +185,10 @@ export function createApiClient(apiKey) {
       if (addOnlyIfCached) form.append('add_only_if_cached', 'true');
 
       const r = await client.post('/api/webdl/createwebdownload', form, {
-        headers: form.getHeaders(),
+        headers: {
+          ...form.getHeaders(),
+          Authorization: `Bearer ${token}`,
+        },
         timeout: 60000,
       });
       return r.data;
@@ -194,7 +205,7 @@ export function createApiClient(apiKey) {
     // FIX: token = apiKey, web_id = the actual ID
     async requestWebDlDl(webdlId, fileId = null, zipLink = true) {
       const params = {
-        token: apiKey,
+        token,
         web_id: webdlId,
         webdl_id: webdlId,
         zip_link: zipLink ? 'true' : 'false',

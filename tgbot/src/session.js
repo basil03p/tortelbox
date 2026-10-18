@@ -9,6 +9,7 @@ export {
   getUserApiKey, getMainApiKey, setUserApiKey, removeUserApiKey, hasApiKey, hasPersonalApiKey,
   setCachedPlan, getCachedPlan,
   setPrivateChatId, getPrivateChatId, updateTrackedItemId,
+  cleanApiKey,
 } from './db.js';
 
 // ── Plan feature gate ─────────────────────────────────────────

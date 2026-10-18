@@ -22,12 +22,13 @@ import {
 
 import {
   upsertUser, trackDownload, isItemOwnedByUser, getAllRegisteredUsers, getUserDetailedInfo,
-  getUserTrackedItemIds, clearUserTracked, deleteTrackedDownload,
+  getUserTrackedItemIds, clearUserTracked, deleteTrackedDownload, getUserDownloads,
+  findTrackedDownloadById, updateDownloadStatus,
 } from './db.js';
 import { createApiClient, extractHashFromMagnet, isInfohash, extractNameFromMagnet } from './api.js';
 import {
   escapeHtml, truncate, formatBytes, statusEmoji, progressBar, extractDownloadUrl, getDownloadStateInfo,
-  resolveCleanDownloadName, isHashString,
+  resolveCleanDownloadName, isHashString, paginate, paginationKeyboard,
 } from './utils.js';
 import { startMonitor } from './monitor.js';
 import { streamUrlToGofile } from './gofile.js';
@@ -63,17 +64,15 @@ const BOT_ADMIN_ID = process.env.BOT_ADMIN_ID ? String(process.env.BOT_ADMIN_ID)
 if (!BOT_ADMIN_ID) console.warn('⚠️  BOT_ADMIN_ID not set — admin commands disabled.');
 if (!process.env.TORBOX_API_KEY) console.warn('⚠️  TORBOX_API_KEY not set — users must /setkey.');
 
-// ── Bot ───────────────────────────────────────────────────────
+// ── Bot Configuration (Webhook on Render/production, Polling on local) ──
+const PUBLIC_URL = process.env.RENDER_EXTERNAL_URL || process.env.WEBHOOK_URL;
+const FORCE_POLLING = process.env.USE_POLLING === 'true';
+const USE_WEBHOOK = Boolean(PUBLIC_URL && !FORCE_POLLING);
+
 const bot = new TelegramBot(BOT_TOKEN, {
-  polling: {
-    autoStart: true,
-    params: {
-      timeout: 10,
-    },
-  },
+  polling: false, // We control polling explicitly to prevent 409 conflict collisions
 });
-bot.deleteWebHook().catch(() => {});
-console.log('🤖 TorBox Bot starting…');
+console.log(`🤖 TorBox Bot initializing in ${USE_WEBHOOK ? 'WEBHOOK mode' : 'POLLING mode'}…`);
 
 // ── Helpers ────────────────────────────────────────────────────
 const isAdmin = (userId) => BOT_ADMIN_ID && String(userId) === BOT_ADMIN_ID;
@@ -143,8 +142,71 @@ function requireAuth(msg, callback) {
   callback();
 }
 
+// ── Helper to detect download type by item ID ───────────────────
+export async function findDownloadType(userId, itemId) {
+  if (!itemId) return 'torrent';
+  const cleanId = String(itemId).replace(/^#/, '').trim();
+
+  // 1. Check DB tracked downloads for this user or globally
+  try {
+    const tracked = await findTrackedDownloadById(cleanId, userId);
+    if (tracked?.type) return tracked.type;
+  } catch (_) {}
+
+  // 2. Query TorBox API with user's key
+  const apiKey = getUserApiKey(userId);
+  if (!apiKey) return 'torrent';
+
+  try {
+    const api = createApiClient(apiKey);
+    // Torrents check
+    const tRes = await api.getTorrentById(Number(cleanId)).catch(() => null);
+    const tData = tRes?.data;
+    if (tData) {
+      if (String(tData.id) === cleanId) return 'torrent';
+      if (Array.isArray(tData) && tData.some((x) => String(x.id) === cleanId)) return 'torrent';
+    }
+  } catch (_) {}
+
+  try {
+    const api = createApiClient(apiKey);
+    // Usenet check
+    const uRes = await api.getUsenetById(Number(cleanId)).catch(() => null);
+    const uData = uRes?.data;
+    if (uData) {
+      if (String(uData.id) === cleanId) return 'usenet';
+      if (Array.isArray(uData) && uData.some((x) => String(x.id) === cleanId)) return 'usenet';
+    }
+  } catch (_) {}
+
+  try {
+    const api = createApiClient(apiKey);
+    // WebDL check
+    const wRes = await api.getWebDlList(true).catch(() => null);
+    const wList = wRes?.data;
+    if (Array.isArray(wList) && wList.some((x) => String(x.id) === cleanId)) {
+      return 'webdl';
+    }
+  } catch (_) {}
+
+  return 'torrent';
+}
+
 // ── /getlink — fresh link on demand ────────────────────────────
 export async function handleGetLink(bot, chatId, userId, type, itemId, isExplicitZip = false) {
+  // Support calling with just itemId: handleGetLink(bot, chatId, userId, itemId)
+  if (type && !itemId && (/^\d+$/.test(String(type)) || !['torrent', 'usenet', 'webdl'].includes(String(type).toLowerCase()))) {
+    itemId = type;
+    type = null;
+  }
+
+  itemId = itemId ? String(itemId).replace(/^#/, '').trim() : null;
+
+  if (!type && itemId) {
+    type = await findDownloadType(userId, itemId);
+  }
+  type = type ? String(type).toLowerCase() : 'torrent';
+
   const apiKey = getUserApiKey(userId);
   const privateChatId = getPrivateChatId(userId);
 
@@ -400,22 +462,78 @@ export async function handleGetLink(bot, chatId, userId, type, itemId, isExplici
 }
 
 // ── /mydownloads ──────────────────────────────────────────────
-async function handleMyDownloads(bot, msg) {
+async function handleMyDownloads(bot, msg, page = 0, editMessageId = null) {
   const userId = msg.from?.id || msg.chat.id;
   const chatId = msg.chat.id;
-  const { getUserDownloads } = await import('./db.js');
 
-  const items = await getUserDownloads(userId);
+  // If user has personal API key or is admin, sync their downloads so any downloads added on TorBox appear!
+  const hasOwnKey = hasPersonalApiKey(userId);
+  if (hasOwnKey || isAdmin(userId)) {
+    const apiKey = getUserApiKey(userId);
+    if (apiKey) {
+      try {
+        const api = createApiClient(apiKey);
+        const plan = getCachedPlan(userId);
+        const [tRes, uRes, wRes] = await Promise.all([
+          api.getTorrentList(true).catch(() => ({ data: [] })),
+          (plan === null || plan >= 1) ? api.getUsenetList(true).catch(() => ({ data: [] })) : Promise.resolve({ data: [] }),
+          (plan === null || plan >= 1) ? api.getWebDlList(true).catch(() => ({ data: [] })) : Promise.resolve({ data: [] }),
+        ]);
 
-  if (!items.length) {
-    await bot.sendMessage(chatId, '📭 <b>No tracked downloads yet.</b>\n\nAdd a torrent, NZB, or web link and the bot will monitor it automatically.', { parse_mode: 'HTML' });
+        for (const t of (tRes?.data || [])) {
+          if (t.id) {
+            const clean = resolveCleanDownloadName(t, t.name);
+            await trackDownload(userId, t.id, 'torrent', clean);
+            const isReady = t.download_finished || t.cached || t.progress >= 1 || String(t.download_state || '').toLowerCase().includes('complete');
+            if (isReady) {
+              await updateDownloadStatus(userId, t.id, 'torrent', 'completed', true, clean);
+            }
+          }
+        }
+        for (const u of (uRes?.data || [])) {
+          if (u.id) {
+            const clean = resolveCleanDownloadName(u, u.name);
+            await trackDownload(userId, u.id, 'usenet', clean);
+            const isReady = u.download_finished || u.progress >= 1 || String(u.download_state || '').toLowerCase().includes('complete');
+            if (isReady) {
+              await updateDownloadStatus(userId, u.id, 'usenet', 'completed', true, clean);
+            }
+          }
+        }
+        for (const w of (wRes?.data || [])) {
+          if (w.id) {
+            const clean = resolveCleanDownloadName(w, w.name);
+            await trackDownload(userId, w.id, 'webdl', clean);
+            const isReady = w.download_finished || w.progress >= 1 || String(w.download_state || '').toLowerCase().includes('complete');
+            if (isReady) {
+              await updateDownloadStatus(userId, w.id, 'webdl', 'completed', true, clean);
+            }
+          }
+        }
+      } catch (_) {}
+    }
+  }
+
+  const allItems = await getUserDownloads(userId, 100);
+
+  if (!allItems.length) {
+    const emptyText = '📭 <b>No tracked downloads yet.</b>\n\nAdd a torrent, NZB, or web link and the bot will monitor it automatically.';
+    if (editMessageId) {
+      await bot.editMessageText(emptyText, { chat_id: chatId, message_id: editMessageId, parse_mode: 'HTML' }).catch(() => {});
+    } else {
+      await bot.sendMessage(chatId, emptyText, { parse_mode: 'HTML' });
+    }
     return;
   }
 
-  let text = `📥 <b>My Downloads</b> (${items.length})\n\n`;
+  const PAGE_SIZE = 10;
+  const { items, page: p, totalPages, total } = paginate(allItems, page, PAGE_SIZE);
+
+  let text = `📥 <b>My Downloads</b> (${total} total${totalPages > 1 ? ` — Page ${p + 1}/${totalPages}` : ''})\n`;
+  text += `⚡ <i>Showing latest downloads first</i>\n\n`;
   const btns = [];
 
-  for (const item of items.slice(0, 10)) {
+  for (const item of items) {
     const typeEmoji = { torrent: '🧲', usenet: '📰', webdl: '🌐' }[item.type] || '📦';
     const cleanName = resolveCleanDownloadName(item, item.name || `#${item.item_id}`);
     const name = truncate(cleanName, 35);
@@ -426,14 +544,36 @@ async function handleMyDownloads(bot, msg) {
     text += `  ${escapeHtml(status)} | ID: <code>${item.item_id}</code>\n\n`;
 
     if (isDone) {
-      btns.push([{ text: `🔗 Get Link: ${truncate(cleanName, 20)}`, callback_data: `getlink:${item.type}:${item.item_id}` }]);
+      btns.push([{ text: `🔗 Get Link: ${truncate(cleanName, 22)}`, callback_data: `getlink:${item.type}:${item.item_id}` }]);
     }
   }
 
-  if (items.length > 10) text += `<i>…and ${items.length - 10} more (showing latest 10)</i>\n`;
-  text += `\n💡 <i>Links expire in ~1 hour. Press button anytime for a fresh one.</i>`;
+  if (totalPages > 1) {
+    const navRow = [];
+    if (p > 0) navRow.push({ text: '◀ Prev', callback_data: `mydownloads:${p - 1}` });
+    navRow.push({ text: `📄 ${p + 1}/${totalPages}`, callback_data: `mydownloads:${p}` });
+    if (p < totalPages - 1) navRow.push({ text: 'Next ▶', callback_data: `mydownloads:${p + 1}` });
+    btns.push(navRow);
+  }
 
-  await bot.sendMessage(chatId, text, { parse_mode: 'HTML', reply_markup: btns.length ? { inline_keyboard: btns } : undefined });
+  text += `💡 <i>Links expire in ~1 hour. Tap button or use <code>/getlink &lt;id&gt;</code> anytime.</i>`;
+
+  const replyMarkup = btns.length ? { inline_keyboard: btns } : undefined;
+
+  if (editMessageId) {
+    await bot.editMessageText(text, {
+      chat_id: chatId,
+      message_id: editMessageId,
+      parse_mode: 'HTML',
+      reply_markup: replyMarkup,
+    }).catch(async (e) => {
+      if (!String(e.message || '').includes('message is not modified')) {
+        await bot.sendMessage(chatId, text, { parse_mode: 'HTML', reply_markup: replyMarkup });
+      }
+    });
+  } else {
+    await bot.sendMessage(chatId, text, { parse_mode: 'HTML', reply_markup: replyMarkup });
+  }
 }
 
 // ── /status — Find active/in-progress downloads across all types ─────
@@ -643,7 +783,7 @@ bot.onText(/\/help/, (msg) => {
     `<b>📥 My Downloads</b>\n` +
     `/mydownloads — All tracked downloads + status\n` +
     `/status — Active downloads in progress\n` +
-    `/getlink &lt;type&gt; &lt;id&gt; — Get fresh download link anytime\n` +
+    `/getlink &lt;id&gt; — Get fresh download link anytime\n` +
     `/cleartracked [all] — Clear completed or all history from database\n` +
     `/untrack &lt;id&gt; — Untrack an item from database\n\n` +
     `<b>📰 Usenet (Essential+)</b>\n` +
@@ -787,22 +927,52 @@ bot.onText(/\/delkey(?:\s+(\d+))?/, async (msg, match) => {
   }
 });
 
-// ── /getlink <type> <id> ──────────────────────────────────────
-bot.onText(/\/getlink(?:\s+(\w+))?(?:\s+(\d+))?/, async (msg, match) => {
+// ── /getlink <id> ─────────────────────────────────────────────
+bot.onText(/\/(?:getlink|link)(?:\s+(.+))?/, async (msg, match) => {
   requireAuth(msg, async () => {
     const userId = msg.from?.id || msg.chat.id;
     const chatId = msg.chat.id;
-    const type = match?.[1]?.toLowerCase();
-    const id   = match?.[2];
+    const rawArgs = match?.[1]?.trim();
 
-    if (!type || !id) {
-      const { getUserDownloads } = await import('./db.js');
-      const items = (await getUserDownloads(userId)).filter(i => i.is_done === 1);
+    let id = null;
+    let type = null;
+
+    if (rawArgs) {
+      const parts = rawArgs.split(/\s+/).filter(Boolean);
+      const KNOWN_TYPES = ['torrent', 'torrents', 'usenet', 'nzb', 'webdl', 'web', 'debrid'];
+
+      for (const part of parts) {
+        const clean = part.replace(/^#/, '');
+        const lower = clean.toLowerCase();
+        if (KNOWN_TYPES.includes(lower)) {
+          if (lower === 'torrents') type = 'torrent';
+          else if (lower === 'nzb') type = 'usenet';
+          else if (lower === 'web' || lower === 'debrid') type = 'webdl';
+          else type = lower;
+        } else if (/^\d+$/.test(clean) || (!id && /^[a-zA-Z0-9_-]+$/.test(clean))) {
+          id = clean;
+        }
+      }
+
+      if (!id && parts.length === 1) {
+        id = parts[0].replace(/^#/, '');
+      }
+    }
+
+    // Fallback: If no ID in arguments, check if user replied to a message containing an ID
+    if (!id && msg.reply_to_message?.text) {
+      const m = msg.reply_to_message.text.match(/(?:ID:\s*|#)(\d+)/i);
+      if (m) id = m[1];
+    }
+
+    // If still no ID provided, show interactive picker of recent completed downloads
+    if (!id) {
+      const items = (await getUserDownloads(userId, 50)).filter(i => i.is_done === 1);
 
       if (!items.length) {
         bot.sendMessage(chatId,
           '📭 <b>No completed downloads tracked yet</b>\n\n' +
-          'Usage: <code>/getlink torrent 12345</code>\n' +
+          'Usage: <code>/getlink &lt;id&gt;</code> (e.g. <code>/getlink 12345</code>)\n' +
           'Or use /mydownloads to see your downloads.',
           { parse_mode: 'HTML' }
         );
@@ -812,7 +982,7 @@ bot.onText(/\/getlink(?:\s+(\w+))?(?:\s+(\d+))?/, async (msg, match) => {
       const btns = items.slice(0, 10).map(i => {
         const cleanName = resolveCleanDownloadName(i, i.name || `#${i.item_id}`);
         return [{
-          text: `${{ torrent: '🧲', usenet: '📰', webdl: '🌐' }[i.type]} ${truncate(cleanName, 28)}`,
+          text: `${{ torrent: '🧲', usenet: '📰', webdl: '🌐' }[i.type] || '📦'} ${truncate(cleanName, 28)}`,
           callback_data: `getlink:${i.type}:${i.item_id}`,
         }];
       });
@@ -824,12 +994,17 @@ bot.onText(/\/getlink(?:\s+(\w+))?(?:\s+(\d+))?/, async (msg, match) => {
       return;
     }
 
+    // Auto-detect type if not explicitly provided
+    if (!type) {
+      type = await findDownloadType(userId, id);
+    }
+
     await handleGetLink(bot, chatId, userId, type, id);
   });
 });
 
 // ── /mydownloads ──────────────────────────────────────────────
-bot.onText(/\/mydownloads/, (msg) => requireAuth(msg, () => handleMyDownloads(bot, msg)));
+bot.onText(/\/(?:mydownloads|mydownlaods)/, (msg) => requireAuth(msg, () => handleMyDownloads(bot, msg)));
 bot.onText(/\/status/, (msg) => requireAuth(msg, () => handleStatus(bot, msg)));
 
 // ── /cleartracked [all] — Clear tracked downloads history from DB ───────
@@ -1194,6 +1369,9 @@ bot.onText(/\/(?:allow|adduser)(?:\s+(.+))?/, async (msg, match) => {
   }
 
   addAllowedUser(targetId, userId, allowMain);
+  if (allowMain) {
+    removeUserApiKey(targetId);
+  }
   upsertUser(targetId, {
     username: msg.reply_to_message?.from?.username,
     firstName: msg.reply_to_message?.from?.first_name,
@@ -1461,8 +1639,9 @@ bot.on('callback_query', async (query) => {
 
   const fakeMsg = { chat: { id: chatId }, from: { id: userId } };
 
-  if (data === 'mydownloads') {
-    await handleMyDownloads(bot, fakeMsg);
+  if (data === 'mydownloads' || data.startsWith('mydownloads:')) {
+    const page = data.includes(':') ? parseInt(data.split(':')[1] || '0', 10) : 0;
+    await handleMyDownloads(bot, fakeMsg, page, query.message?.message_id);
     return;
   }
 
@@ -1559,7 +1738,7 @@ bot.setMyCommands([
   { command: 'status',        description: '⚡ Active downloads status' },
   { command: 'debrid',        description: '🌐 Add debrid / web link' },
   { command: 'mydownloads',   description: '📥 My downloads + get links' },
-  { command: 'getlink',       description: '🔗 Get fresh download link anytime' },
+  { command: 'getlink',       description: '🔗 Get fresh link by ID: /getlink <id>' },
   { command: 'setkey',        description: '🔑 Set personal TorBox API key' },
   { command: 'mykey',         description: '🔑 View current API key & plan' },
   { command: 'gofile',        description: '📤 Upload item to Gofile.io' },
@@ -1583,14 +1762,76 @@ bot.setMyCommands([
 
 startMonitor(bot);
 
-// ── Native Health Check Server for Render ─────────────────────
+// ── Native Server (Health Checks + Webhook for Render) ────────
 import http from 'http';
 const PORT = process.env.PORT || 10000;
-http.createServer((req, res) => {
+
+const server = http.createServer((req, res) => {
+  const url = req.url || '';
+  const method = req.method || 'GET';
+
+  // 1. Telegram Webhook handler
+  const isWebhook = (
+    method === 'POST' && (
+      url === `/bot${BOT_TOKEN}` ||
+      url === '/webhook' ||
+      url === `/webhook/${BOT_TOKEN}` ||
+      url.startsWith(`/bot${BOT_TOKEN}?`)
+    )
+  );
+
+  if (isWebhook) {
+    let body = '';
+    req.on('data', (chunk) => {
+      body += chunk;
+      if (body.length > 10 * 1024 * 1024) req.destroy();
+    });
+    req.on('end', () => {
+      try {
+        if (body) {
+          const update = JSON.parse(body);
+          bot.processUpdate(update);
+        }
+      } catch (err) {
+        console.error('⚠️ Failed to parse webhook update:', err.message);
+      }
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end('{"ok":true}');
+    });
+    return;
+  }
+
+  // 2. Health check endpoint (for Render / uptime pings)
   res.writeHead(200, { 'Content-Type': 'text/plain' });
   res.end('🤖 TorBox Telegram Bot is active and running 24/7\n');
-}).listen(PORT, () => {
+});
+
+server.listen(PORT, async () => {
   console.log(`🌐 Health server listening on port ${PORT}`);
+
+  if (USE_WEBHOOK) {
+    const publicUrl = PUBLIC_URL.replace(/\/$/, '');
+    const webhookPath = `/bot${BOT_TOKEN}`;
+    const webhookUrl = `${publicUrl}${webhookPath}`;
+
+    try {
+      await bot.setWebHook(webhookUrl, { drop_pending_updates: false });
+      console.log(`🌐 Telegram Webhook active at: ${publicUrl}/bot***`);
+    } catch (err) {
+      console.warn(`⚠️ Failed to set Telegram WebHook (${err.message}), falling back to Polling…`);
+      await bot.deleteWebHook().catch(() => {});
+      bot.startPolling({ params: { timeout: 10 } });
+      console.log('🔄 Telegram Polling started (fallback).');
+    }
+  } else {
+    try {
+      await bot.deleteWebHook();
+    } catch (_) {}
+    bot.startPolling({ params: { timeout: 10 } });
+    console.log('🔄 Telegram Polling started.');
+  }
+
+  console.log('✅ TorBox Bot is live!');
 });
 
 // =============================================================
@@ -1610,11 +1851,11 @@ function formatError(err) {
 let isConflictCoolingDown = false;
 bot.on('polling_error', (err) => {
   const msg = formatError(err);
-  if (msg.includes('409 Conflict')) {
+  if (msg.includes('409 Conflict') || msg.includes('terminated by other getUpdates request')) {
     if (!isConflictCoolingDown) {
       isConflictCoolingDown = true;
-      console.warn('⚠️ Telegram Polling Conflict (409): Another bot instance is running with this token. (If running locally, stop your local bot or use a separate test bot token).');
-      setTimeout(() => { isConflictCoolingDown = false; }, 15000);
+      console.warn('⚠️ Telegram Polling Conflict (409): Another bot instance or Webhook is active for this token.');
+      setTimeout(() => { isConflictCoolingDown = false; }, 30000);
     }
   } else if (msg.includes('ETIMEDOUT') || msg.includes('EFATAL') || msg.includes('ECONNRESET')) {
     console.warn(`⚠️ Telegram network glitch (${msg}). Bot will auto-retry…`);
@@ -1635,16 +1876,21 @@ process.on('uncaughtException', (err) => {
   console.error('💥 Intercepted Uncaught Exception:', formatError(err));
 });
 
-process.on('SIGINT', async () => {
-  console.log('\n🛑 Shutting down TorBox Telegram Bot…');
-  try { await bot.stopPolling(); } catch (_) {}
+let isShuttingDownBot = false;
+async function gracefulShutdown(signal) {
+  if (isShuttingDownBot) return;
+  isShuttingDownBot = true;
+  console.log(`\n🛑 ${signal} received — shutting down TorBox Telegram Bot…`);
+  try {
+    if (bot.isPolling()) {
+      await bot.stopPolling();
+    }
+  } catch (_) {}
+  try {
+    server.close();
+  } catch (_) {}
   process.exit(0);
-});
+}
 
-process.on('SIGTERM', async () => {
-  console.log('\n🛑 SIGTERM received — shutting down…');
-  try { await bot.stopPolling(); } catch (_) {}
-  process.exit(0);
-});
-
-console.log('✅ TorBox Bot is live!');
+process.on('SIGINT', () => gracefulShutdown('SIGINT'));
+process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));

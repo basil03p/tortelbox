@@ -66,8 +66,21 @@ function shutdown() {
   isShuttingDown = true;
   if (botRestartTimer) clearTimeout(botRestartTimer);
   console.log('\n🛑 Shutting down Telegram Bot process…');
-  if (botProcess) botProcess.kill('SIGTERM');
-  process.exit(0);
+  if (botProcess && !botProcess.killed) {
+    const killTimeout = setTimeout(() => {
+      try { botProcess.kill('SIGKILL'); } catch (_) {}
+      process.exit(0);
+    }, 4000);
+
+    botProcess.once('exit', () => {
+      clearTimeout(killTimeout);
+      process.exit(0);
+    });
+
+    botProcess.kill('SIGTERM');
+  } else {
+    process.exit(0);
+  }
 }
 
 process.on('SIGINT', shutdown);

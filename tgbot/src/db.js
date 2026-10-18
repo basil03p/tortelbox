@@ -7,7 +7,7 @@ import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 
 const require = createRequire(import.meta.url);
-const Database = require('better-sqlite3');
+let Database = null;
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const DATA_DIR = join(__dirname, '..', 'data');
@@ -35,6 +35,8 @@ if (MONGO_URI) {
     await mongoDb.collection('api_keys').createIndex({ user_id: 1 }, { unique: true });
     await mongoDb.collection('private_chats').createIndex({ user_id: 1 }, { unique: true });
     await mongoDb.collection('tracked_downloads').createIndex({ user_id: 1, item_id: 1, type: 1 }, { unique: true });
+    await mongoDb.collection('tracked_downloads').createIndex({ user_id: 1, updated_at: -1 });
+    await mongoDb.collection('tracked_downloads').createIndex({ user_id: 1, created_at: -1 });
     await mongoDb.collection('gofile_uploads').createIndex({ user_id: 1, created_at: -1 });
 
     // Initial cache sync from MongoDB
@@ -54,10 +56,16 @@ if (MONGO_URI) {
 }
 
 if (!mongoDb) {
-  const DB_PATH = process.env.DB_PATH || join(DATA_DIR, 'bot.db');
-  db = new Database(DB_PATH);
-  db.pragma('journal_mode = WAL');
-  db.pragma('foreign_keys = ON');
+  try {
+    Database = require('better-sqlite3');
+  } catch (err) {
+    console.error('⚠️ Could not load better-sqlite3:', err.message);
+  }
+  if (Database) {
+    const DB_PATH = process.env.DB_PATH || join(DATA_DIR, 'bot.db');
+    db = new Database(DB_PATH);
+    db.pragma('journal_mode = WAL');
+    db.pragma('foreign_keys = ON');
 
   db.exec(`
     CREATE TABLE IF NOT EXISTS users (
@@ -105,6 +113,7 @@ if (!mongoDb) {
       is_done      INTEGER NOT NULL DEFAULT 0,
       notified_done INTEGER NOT NULL DEFAULT 0,
       created_at   TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at   TEXT NOT NULL DEFAULT (datetime('now')),
       done_at      TEXT,
       UNIQUE(user_id, item_id, type)
     );
@@ -123,7 +132,53 @@ if (!mongoDb) {
       created_at    TEXT NOT NULL DEFAULT (datetime('now'))
     );
   `);
-  console.log(`💾 Database opened: ${DB_PATH}`);
+
+  // Migrations for existing databases
+  try {
+    db.exec("ALTER TABLE tracked_downloads ADD COLUMN created_at TEXT NOT NULL DEFAULT (datetime('now'));");
+  } catch (_) {}
+  try {
+    db.exec("ALTER TABLE tracked_downloads ADD COLUMN updated_at TEXT NOT NULL DEFAULT (datetime('now'));");
+  } catch (_) {}
+  try {
+    db.exec("ALTER TABLE tracked_downloads ADD COLUMN done_at TEXT;");
+  } catch (_) {}
+  try {
+    db.exec("UPDATE tracked_downloads SET created_at = datetime('now') WHERE created_at IS NULL;");
+    db.exec("UPDATE tracked_downloads SET updated_at = created_at WHERE updated_at IS NULL;");
+  } catch (_) {}
+
+    console.log(`💾 Database opened: ${DB_PATH}`);
+  }
+}
+
+// ──────────────────────────────────────────────────────────────
+// API KEY SANITIZATION UTILITY
+// ──────────────────────────────────────────────────────────────
+
+export function cleanApiKey(key) {
+  if (!key || typeof key !== 'string') return '';
+  let cleaned = key.trim();
+  // Strip surrounding quotes: "xxx" or 'xxx'
+  if ((cleaned.startsWith('"') && cleaned.endsWith('"')) ||
+      (cleaned.startsWith("'") && cleaned.endsWith("'"))) {
+    cleaned = cleaned.slice(1, -1).trim();
+  }
+  // Strip leading Bearer prefix if accidentally included
+  if (cleaned.toLowerCase().startsWith('bearer ')) {
+    cleaned = cleaned.slice(7).trim();
+  }
+  // Strip surrounding quotes again if nested like "'xxx'"
+  if ((cleaned.startsWith('"') && cleaned.endsWith('"')) ||
+      (cleaned.startsWith("'") && cleaned.endsWith("'"))) {
+    cleaned = cleaned.slice(1, -1).trim();
+  }
+  // Reject obvious placeholder strings
+  const lower = cleaned.toLowerCase();
+  if (['', 'null', 'undefined', 'your_api_key', 'your_torbox_api_key', 'api_key', 'changeme', 'placeholder'].includes(lower)) {
+    return '';
+  }
+  return cleaned;
 }
 
 // ──────────────────────────────────────────────────────────────
@@ -133,12 +188,18 @@ if (!mongoDb) {
 export function upsertUser(userId, { username, firstName, isAllowed, allowMain } = {}) {
   const uid = String(userId);
   const existing = userCache.get(uid) || {};
+  const mainVal = (allowMain === true || allowMain === 1 || String(allowMain).toLowerCase() === 'main' || String(allowMain) === '1')
+    ? 1
+    : (allowMain === false || allowMain === 0 || String(allowMain) === '0')
+      ? 0
+      : (existing.allow_main ?? 0);
+
   const uData = {
     user_id: uid,
     username: username !== undefined ? (username || null) : (existing.username || null),
     first_name: firstName !== undefined ? (firstName || null) : (existing.first_name || null),
     is_allowed: isAllowed !== undefined ? (isAllowed ? 1 : 0) : (existing.is_allowed ?? 0),
-    allow_main: allowMain !== undefined ? (allowMain ? 1 : 0) : (existing.allow_main ?? 0),
+    allow_main: mainVal,
   };
   userCache.set(uid, { ...existing, ...uData });
 
@@ -150,15 +211,17 @@ export function upsertUser(userId, { username, firstName, isAllowed, allowMain }
     ).catch(console.error);
     return;
   }
-  db.prepare(`
-    INSERT INTO users (user_id, username, first_name, is_allowed, allow_main)
-    VALUES (?, ?, ?, ?, ?)
-    ON CONFLICT(user_id) DO UPDATE SET
-      username   = COALESCE(excluded.username, username),
-      first_name = COALESCE(excluded.first_name, first_name),
-      is_allowed = CASE WHEN excluded.is_allowed IS NOT NULL THEN excluded.is_allowed ELSE is_allowed END,
-      allow_main = CASE WHEN excluded.allow_main IS NOT NULL THEN excluded.allow_main ELSE allow_main END
-  `).run(uid, uData.username, uData.first_name, uData.is_allowed, uData.allow_main);
+  if (db) {
+    db.prepare(`
+      INSERT INTO users (user_id, username, first_name, is_allowed, allow_main)
+      VALUES (?, ?, ?, ?, ?)
+      ON CONFLICT(user_id) DO UPDATE SET
+        username   = COALESCE(excluded.username, username),
+        first_name = COALESCE(excluded.first_name, first_name),
+        is_allowed = CASE WHEN excluded.is_allowed IS NOT NULL THEN excluded.is_allowed ELSE is_allowed END,
+        allow_main = CASE WHEN excluded.allow_main IS NOT NULL THEN excluded.allow_main ELSE allow_main END
+    `).run(uid, uData.username, uData.first_name, uData.is_allowed, uData.allow_main);
+  }
 }
 
 export function isUserAllowed(userId) {
@@ -184,11 +247,16 @@ export function isUserAllowed(userId) {
     return true;
   }
 
-  const count = db.prepare('SELECT COUNT(*) as c FROM users WHERE is_allowed = 1').get();
-  if (count.c > 0) {
-    const row = db.prepare('SELECT is_allowed FROM users WHERE user_id = ?').get(uid);
-    return row?.is_allowed === 1;
+  if (db) {
+    const count = db.prepare('SELECT COUNT(*) as c FROM users WHERE is_allowed = 1').get();
+    if (count.c > 0) {
+      const row = db.prepare('SELECT is_allowed FROM users WHERE user_id = ?').get(uid);
+      return row?.is_allowed === 1;
+    }
   }
+
+  const cached = userCache.get(uid);
+  if (cached?.is_allowed === 1 || cached?.is_allowed === true) return true;
 
   if (adminId || envAllowed) return false;
   return true;
@@ -199,20 +267,25 @@ export function isUserAllowedMain(userId) {
   const adminId = process.env.BOT_ADMIN_ID ? String(process.env.BOT_ADMIN_ID).trim() : null;
   if (adminId && uid === adminId) return true;
 
-  if (mongoDb) {
-    const cached = userCache.get(uid);
-    return cached?.allow_main === 1 || cached?.allow_main === true;
+  const cached = userCache.get(uid);
+  if (cached?.allow_main === 1 || cached?.allow_main === true || cached?.allow_main === '1' || cached?.allow_main === 'true') {
+    return true;
   }
+
   if (db) {
     const row = db.prepare('SELECT allow_main FROM users WHERE user_id = ?').get(uid);
-    return row?.allow_main === 1;
+    return row?.allow_main === 1 || row?.allow_main === true || row?.allow_main === '1' || row?.allow_main === 'true';
   }
   return false;
 }
 
 export function addAllowedUser(userId, addedBy = null, allowMain = false) {
   const uid = String(userId);
-  const mainVal = (allowMain === true || allowMain === 1 || String(allowMain).toLowerCase() === 'main') ? 1 : 0;
+  const mainVal = (allowMain === true || allowMain === 1 || String(allowMain).toLowerCase() === 'main' || String(allowMain) === '1') ? 1 : 0;
+  if (mainVal === 1) {
+    // When granted shared access to the main account, wipe any old/stale personal key
+    removeUserApiKey(uid);
+  }
   const existing = userCache.get(uid) || {};
   const uData = {
     user_id: uid,
@@ -231,11 +304,13 @@ export function addAllowedUser(userId, addedBy = null, allowMain = false) {
     ).catch(console.error);
     return;
   }
-  db.prepare(`
-    INSERT INTO users (user_id, is_allowed, allow_main, added_by)
-    VALUES (?, 1, ?, ?)
-    ON CONFLICT(user_id) DO UPDATE SET is_allowed = 1, allow_main = excluded.allow_main, added_by = excluded.added_by
-  `).run(uid, mainVal, addedBy ? String(addedBy) : null);
+  if (db) {
+    db.prepare(`
+      INSERT INTO users (user_id, is_allowed, allow_main, added_by)
+      VALUES (?, 1, ?, ?)
+      ON CONFLICT(user_id) DO UPDATE SET is_allowed = 1, allow_main = excluded.allow_main, added_by = excluded.added_by
+    `).run(uid, mainVal, addedBy ? String(addedBy) : null);
+  }
 }
 
 export function removeAllowedUser(userId) {
@@ -250,7 +325,9 @@ export function removeAllowedUser(userId) {
     mongoDb.collection('users').updateOne({ user_id: uid }, { $set: { is_allowed: 0, allow_main: 0 } }).catch(console.error);
     return;
   }
-  db.prepare('UPDATE users SET is_allowed = 0, allow_main = 0 WHERE user_id = ?').run(uid);
+  if (db) {
+    db.prepare('UPDATE users SET is_allowed = 0, allow_main = 0 WHERE user_id = ?').run(uid);
+  }
 }
 
 export function listAllowedUsers() {
@@ -368,24 +445,51 @@ export function isOpenAccess() {
 // ──────────────────────────────────────────────────────────────
 
 export function getMainApiKey() {
-  if (process.env.TORBOX_API_KEY) {
-    return process.env.TORBOX_API_KEY;
-  }
   const adminId = process.env.BOT_ADMIN_ID ? String(process.env.BOT_ADMIN_ID).trim() : null;
-  if (mongoDb) {
-    if (adminId && apiKeyCache.get(adminId)?.api_key) {
-      return apiKeyCache.get(adminId).api_key;
-    }
-    for (const [, kData] of apiKeyCache.entries()) {
-      if (kData?.api_key) return kData.api_key;
-    }
-  } else if (db) {
-    if (adminId) {
+
+  // 1. First priority: Check if admin configured an active API key in MongoDB / SQLite via /setkey
+  if (adminId) {
+    const adminCached = apiKeyCache.get(adminId);
+    const cleaned = cleanApiKey(adminCached?.api_key);
+    if (cleaned) return cleaned;
+
+    if (db) {
       const adminRow = db.prepare('SELECT api_key FROM api_keys WHERE user_id = ?').get(adminId);
-      if (adminRow?.api_key) return adminRow.api_key;
+      const cleanedDb = cleanApiKey(adminRow?.api_key);
+      if (cleanedDb) return cleanedDb;
     }
-    const firstRow = db.prepare('SELECT api_key FROM api_keys WHERE api_key IS NOT NULL AND api_key != "" LIMIT 1').get();
-    if (firstRow?.api_key) return firstRow.api_key;
+  }
+
+  // 2. Second priority: process.env.TORBOX_API_KEY (cleaned of surrounding quotes, Bearer, whitespace)
+  const envKey = cleanApiKey(process.env.TORBOX_API_KEY);
+  if (envKey) return envKey;
+
+  // 3. Third priority: Check owners or allowed users who might be the bot creator
+  const ownerEnv = process.env.BOT_OWNER_ID || process.env.OWNER_ID;
+  if (ownerEnv) {
+    const ownerId = String(ownerEnv).trim();
+    const ownerCached = apiKeyCache.get(ownerId);
+    const cleaned = cleanApiKey(ownerCached?.api_key);
+    if (cleaned) return cleaned;
+
+    if (db) {
+      const row = db.prepare('SELECT api_key FROM api_keys WHERE user_id = ?').get(ownerId);
+      const cleanedDb = cleanApiKey(row?.api_key);
+      if (cleanedDb) return cleanedDb;
+    }
+  }
+
+  // 4. Fourth priority: Any valid key saved in the database / cache
+  for (const [, kData] of apiKeyCache.entries()) {
+    const cleaned = cleanApiKey(kData?.api_key);
+    if (cleaned) return cleaned;
+  }
+  if (db) {
+    const rows = db.prepare('SELECT api_key FROM api_keys WHERE api_key IS NOT NULL AND api_key != ""').all();
+    for (const row of rows) {
+      const cleaned = cleanApiKey(row?.api_key);
+      if (cleaned) return cleaned;
+    }
   }
   return null;
 }
@@ -393,18 +497,23 @@ export function getMainApiKey() {
 export function getUserApiKey(userId) {
   const uid = String(userId);
 
-  // 1. Check if user has explicit key in cache/DB
-  let key = null;
-  if (mongoDb) {
-    const cached = apiKeyCache.get(uid);
-    key = cached?.api_key || null;
-  } else if (db) {
-    const row = db.prepare('SELECT api_key FROM api_keys WHERE user_id = ?').get(uid);
-    key = row?.api_key || null;
+  // 1. If user is admin OR explicitly allowed with 'main', prioritize the main account key
+  if (isUserAllowedMain(uid)) {
+    const mainKey = getMainApiKey();
+    if (mainKey) return mainKey;
   }
-  if (key) return key;
 
-  // 2. Fallback to Main / Owner API Key ONLY if user is admin OR explicitly allowed with 'main'
+  // 2. Check if user has explicit personal key in cache/DB
+  let personalKey = apiKeyCache.get(uid)?.api_key || null;
+  if (!personalKey && db) {
+    const row = db.prepare('SELECT api_key FROM api_keys WHERE user_id = ?').get(uid);
+    personalKey = row?.api_key || null;
+  }
+
+  const cleanedPersonal = cleanApiKey(personalKey);
+  if (cleanedPersonal) return cleanedPersonal;
+
+  // 3. Fallback to Main / Owner API Key if user is allowed with 'main'
   if (isUserAllowedMain(uid)) {
     return getMainApiKey();
   }
@@ -414,10 +523,11 @@ export function getUserApiKey(userId) {
 
 export function setUserApiKey(userId, apiKey, plan = null) {
   const uid = String(userId);
+  const cleanKey = cleanApiKey(apiKey);
   // Remove existing cached key entry for this user to ensure complete overwrite
   apiKeyCache.delete(uid);
 
-  const kData = { user_id: uid, api_key: apiKey, plan, updated_at: new Date().toISOString() };
+  const kData = { user_id: uid, api_key: cleanKey, plan, updated_at: new Date().toISOString() };
   apiKeyCache.set(uid, kData);
 
   if (mongoDb) {
@@ -428,11 +538,13 @@ export function setUserApiKey(userId, apiKey, plan = null) {
     ).catch(console.error);
     return;
   }
-  db.prepare(`
-    INSERT INTO api_keys (user_id, api_key, plan)
-    VALUES (?, ?, ?)
-    ON CONFLICT(user_id) DO UPDATE SET api_key = excluded.api_key, plan = excluded.plan, updated_at = datetime('now')
-  `).run(uid, apiKey, plan);
+  if (db) {
+    db.prepare(`
+      INSERT INTO api_keys (user_id, api_key, plan)
+      VALUES (?, ?, ?)
+      ON CONFLICT(user_id) DO UPDATE SET api_key = excluded.api_key, plan = excluded.plan, updated_at = datetime('now')
+    `).run(uid, cleanKey, plan);
+  }
 }
 
 export function removeUserApiKey(userId) {
@@ -443,7 +555,9 @@ export function removeUserApiKey(userId) {
     mongoDb.collection('api_keys').deleteOne({ user_id: uid }).catch(console.error);
     return;
   }
-  db.prepare('DELETE FROM api_keys WHERE user_id = ?').run(uid);
+  if (db) {
+    db.prepare('DELETE FROM api_keys WHERE user_id = ?').run(uid);
+  }
 }
 
 export function hasApiKey(userId) {
@@ -460,7 +574,8 @@ export function hasPersonalApiKey(userId) {
     const row = db.prepare('SELECT api_key FROM api_keys WHERE user_id = ?').get(uid);
     return !!(row?.api_key && row.api_key.trim());
   }
-  return false;
+  const cached = apiKeyCache.get(uid);
+  return !!(cached?.api_key && cached.api_key.trim());
 }
 
 export function setCachedPlan(userId, plan) {
@@ -477,11 +592,13 @@ export function setCachedPlan(userId, plan) {
     ).catch(console.error);
     return;
   }
-  db.prepare(`
-    INSERT INTO api_keys (user_id, api_key, plan)
-    VALUES (?, '', ?)
-    ON CONFLICT(user_id) DO UPDATE SET plan = excluded.plan
-  `).run(uid, plan);
+  if (db) {
+    db.prepare(`
+      INSERT INTO api_keys (user_id, api_key, plan)
+      VALUES (?, '', ?)
+      ON CONFLICT(user_id) DO UPDATE SET plan = excluded.plan
+    `).run(uid, plan);
+  }
 }
 
 export function getCachedPlan(userId) {
@@ -494,6 +611,8 @@ export function getCachedPlan(userId) {
   } else if (db) {
     const row = db.prepare('SELECT plan FROM api_keys WHERE user_id = ?').get(uid);
     plan = row?.plan ?? null;
+  } else {
+    plan = apiKeyCache.get(uid)?.plan ?? null;
   }
 
   // Fallback to Admin's plan for users with main account access
@@ -512,6 +631,10 @@ export function getCachedPlan(userId) {
       }
       const firstRow = db.prepare('SELECT plan FROM api_keys WHERE plan IS NOT NULL LIMIT 1').get();
       if (firstRow?.plan != null) return firstRow.plan;
+    } else {
+      if (adminId && apiKeyCache.get(adminId)?.plan != null) {
+        return apiKeyCache.get(adminId).plan;
+      }
     }
   }
 
@@ -531,11 +654,13 @@ export function setPrivateChatId(userId, chatId) {
     ).catch(console.error);
     return;
   }
-  db.prepare(`
-    INSERT INTO private_chats (user_id, chat_id)
-    VALUES (?, ?)
-    ON CONFLICT(user_id) DO UPDATE SET chat_id = excluded.chat_id, updated_at = datetime('now')
-  `).run(uid, cid);
+  if (db) {
+    db.prepare(`
+      INSERT INTO private_chats (user_id, chat_id)
+      VALUES (?, ?)
+      ON CONFLICT(user_id) DO UPDATE SET chat_id = excluded.chat_id, updated_at = datetime('now')
+    `).run(uid, cid);
+  }
 }
 
 export function getPrivateChatId(userId) {
@@ -543,8 +668,11 @@ export function getPrivateChatId(userId) {
   if (mongoDb) {
     return privateChatCache.get(uid) || uid;
   }
-  const row = db.prepare('SELECT chat_id FROM private_chats WHERE user_id = ?').get(uid);
-  return row?.chat_id || uid;
+  if (db) {
+    const row = db.prepare('SELECT chat_id FROM private_chats WHERE user_id = ?').get(uid);
+    return row?.chat_id || uid;
+  }
+  return privateChatCache.get(uid) || uid;
 }
 
 // ──────────────────────────────────────────────────────────────
@@ -554,15 +682,18 @@ export function getPrivateChatId(userId) {
 export async function trackDownload(userId, itemId, type, name) {
   const uid = String(userId);
   const itemStr = String(itemId);
+  const now = new Date().toISOString();
+
   if (mongoDb) {
     await mongoDb.collection('tracked_downloads').updateOne(
       { user_id: uid, item_id: itemStr, type },
       {
         $set: {
           name: name || null,
-          created_at: new Date().toISOString(),
+          updated_at: now,
         },
         $setOnInsert: {
+          created_at: now,
           is_done: 0,
           notified_done: 0,
         },
@@ -573,9 +704,11 @@ export async function trackDownload(userId, itemId, type, name) {
   }
   try {
     db.prepare(`
-      INSERT INTO tracked_downloads (user_id, item_id, type, name, is_done, notified_done)
-      VALUES (?, ?, ?, ?, 0, 0)
-      ON CONFLICT(user_id, item_id, type) DO UPDATE SET name = excluded.name
+      INSERT INTO tracked_downloads (user_id, item_id, type, name, is_done, notified_done, created_at, updated_at)
+      VALUES (?, ?, ?, ?, 0, 0, datetime('now'), datetime('now'))
+      ON CONFLICT(user_id, item_id, type) DO UPDATE SET
+        name = COALESCE(excluded.name, name),
+        updated_at = datetime('now')
     `).run(uid, itemStr, type, name || null);
   } catch (_) { /* skip duplicates */ }
 }
@@ -584,10 +717,14 @@ export async function updateDownloadStatus(userId, itemId, type, status, isDone,
   const uid = String(userId);
   const itemStr = String(itemId);
   const doneVal = isDone ? 1 : 0;
+  const now = new Date().toISOString();
 
   if (mongoDb) {
-    const updateObj = { last_status: status };
-    if (isDone) updateObj.is_done = 1;
+    const updateObj = { last_status: status, updated_at: now };
+    if (isDone) {
+      updateObj.is_done = 1;
+      updateObj.done_at = now;
+    }
     if (name) updateObj.name = name;
 
     await mongoDb.collection('tracked_downloads').updateOne(
@@ -599,9 +736,13 @@ export async function updateDownloadStatus(userId, itemId, type, status, isDone,
 
   db.prepare(`
     UPDATE tracked_downloads
-    SET last_status = ?, is_done = MAX(is_done, ?), name = COALESCE(?, name)
+    SET last_status = ?,
+        is_done = MAX(is_done, ?),
+        done_at = CASE WHEN ? = 1 AND done_at IS NULL THEN datetime('now') ELSE done_at END,
+        updated_at = datetime('now'),
+        name = COALESCE(?, name)
     WHERE user_id = ? AND item_id = ? AND type = ?
-  `).run(status, doneVal, name || null, uid, itemStr, type);
+  `).run(status, doneVal, doneVal, name || null, uid, itemStr, type);
 }
 
 export async function clearOldPendingNotifications() {
@@ -676,17 +817,71 @@ export async function getActiveTracked() {
   `).all();
 }
 
-export async function getUserDownloads(userId) {
+export async function getUserDownloads(userId, limit = 50) {
   const uid = String(userId);
+  let items = [];
+
   if (mongoDb) {
-    return await mongoDb.collection('tracked_downloads').find({ user_id: uid }).sort({ created_at: -1 }).limit(20).toArray();
+    items = await mongoDb.collection('tracked_downloads')
+      .find({ user_id: uid })
+      .sort({ updated_at: -1, created_at: -1, _id: -1 })
+      .limit(limit)
+      .toArray();
+  } else if (db) {
+    items = db.prepare(`
+      SELECT * FROM tracked_downloads
+      WHERE user_id = ?
+      ORDER BY COALESCE(updated_at, created_at, done_at, datetime('1970-01-01')) DESC, id DESC
+      LIMIT ?
+    `).all(uid, limit);
+  }
+
+  // Ensure latest ones are strictly first in all database backends
+  items.sort((a, b) => {
+    const tA = new Date(a.updated_at || a.created_at || a.done_at || 0).getTime() || 0;
+    const tB = new Date(b.updated_at || b.created_at || b.done_at || 0).getTime() || 0;
+    if (tA !== tB) return tB - tA;
+
+    const numA = Number(a.item_id);
+    const numB = Number(b.item_id);
+    if (!isNaN(numA) && !isNaN(numB) && numA !== numB) return numB - numA;
+
+    if (a.id && b.id) return b.id - a.id;
+    return String(b._id || '').localeCompare(String(a._id || ''));
+  });
+
+  return items;
+}
+
+export async function getTrackedDownloadByItemId(userId, itemId) {
+  const uid = String(userId);
+  const itemStr = String(itemId);
+  if (mongoDb) {
+    return await mongoDb.collection('tracked_downloads').findOne({ user_id: uid, item_id: itemStr });
   }
   return db.prepare(`
     SELECT * FROM tracked_downloads
-    WHERE user_id = ?
-    ORDER BY created_at DESC
-    LIMIT 20
-  `).all(uid);
+    WHERE user_id = ? AND item_id = ?
+    ORDER BY COALESCE(updated_at, created_at, datetime('1970-01-01')) DESC, id DESC
+    LIMIT 1
+  `).get(uid, itemStr);
+}
+
+export async function findTrackedDownloadById(itemId, userId = null) {
+  const itemStr = String(itemId);
+  if (userId) {
+    const direct = await getTrackedDownloadByItemId(userId, itemStr);
+    if (direct) return direct;
+  }
+  if (mongoDb) {
+    return await mongoDb.collection('tracked_downloads').findOne({ item_id: itemStr });
+  }
+  return db.prepare(`
+    SELECT * FROM tracked_downloads
+    WHERE item_id = ?
+    ORDER BY COALESCE(updated_at, created_at, datetime('1970-01-01')) DESC, id DESC
+    LIMIT 1
+  `).get(itemStr);
 }
 
 export async function getDownloadById(userId, itemId, type) {
@@ -704,14 +899,15 @@ export async function getDownloadById(userId, itemId, type) {
 export async function updateTrackedName(userId, itemId, type, name) {
   const uid = String(userId);
   const itemStr = String(itemId);
+  const now = new Date().toISOString();
   if (mongoDb) {
     await mongoDb.collection('tracked_downloads').updateOne(
       { user_id: uid, item_id: itemStr, type },
-      { $set: { name } }
+      { $set: { name, updated_at: now } }
     ).catch(console.error);
     return;
   }
-  db.prepare('UPDATE tracked_downloads SET name = ? WHERE user_id = ? AND item_id = ? AND type = ?').run(name, uid, itemStr, type);
+  db.prepare('UPDATE tracked_downloads SET name = ?, updated_at = datetime(\'now\') WHERE user_id = ? AND item_id = ? AND type = ?').run(name, uid, itemStr, type);
 }
 
 export async function deleteTrackedDownload(userId, itemId, type) {
