@@ -14,15 +14,21 @@ import 'dotenv/config';
 import TelegramBot from 'node-telegram-bot-api';
 
 import {
-  getUserApiKey, setUserApiKey, removeUserApiKey, hasApiKey, sessions,
+  getUserApiKey, setUserApiKey, removeUserApiKey, hasApiKey, hasPersonalApiKey, sessions,
   setPrivateChatId, getPrivateChatId, setCachedPlan, getCachedPlan,
-  isUserAllowed, addAllowedUser, removeAllowedUser, listAllowedUsers, isOpenAccess,
+  isUserAllowed, isUserAllowedMain, addAllowedUser, removeAllowedUser, listAllowedUsers, isOpenAccess,
   checkPlanFeature,
 } from './session.js';
 
-import { upsertUser, trackDownload, isItemOwnedByUser, getAllRegisteredUsers, getUserDetailedInfo } from './db.js';
-import { createApiClient, extractHashFromMagnet, isInfohash } from './api.js';
-import { escapeHtml, truncate, formatBytes, statusEmoji, progressBar } from './utils.js';
+import {
+  upsertUser, trackDownload, isItemOwnedByUser, getAllRegisteredUsers, getUserDetailedInfo,
+  getUserTrackedItemIds, clearUserTracked, deleteTrackedDownload,
+} from './db.js';
+import { createApiClient, extractHashFromMagnet, isInfohash, extractNameFromMagnet } from './api.js';
+import {
+  escapeHtml, truncate, formatBytes, statusEmoji, progressBar, extractDownloadUrl, getDownloadStateInfo,
+  resolveCleanDownloadName, isHashString,
+} from './utils.js';
 import { startMonitor } from './monitor.js';
 import { streamUrlToGofile } from './gofile.js';
 
@@ -92,10 +98,26 @@ async function ensurePlanCached(userId) {
   } catch (_) {}
 }
 
+function sendNoApiKeyMessage(chatId, userId) {
+  bot.sendMessage(
+    chatId,
+    `🔑 <b>TorBox API Key Required</b>\n\n` +
+    `Please set your TorBox API key to use the bot:\n` +
+    `<code>/setkey YOUR_API_KEY</code>\n\n` +
+    `Get your key at: https://torbox.app/settings`,
+    { parse_mode: 'HTML' }
+  );
+}
+
 // ── Auth middleware ────────────────────────────────────────────
 function requireAuth(msg, callback) {
   const userId = msg.from?.id || msg.chat.id;
   const chatId = msg.chat.id;
+
+  if (msg.chat.type === 'private' && userId) {
+    upsertUser(userId, { username: msg.from?.username, firstName: msg.from?.first_name });
+    setPrivateChatId(userId, chatId);
+  }
 
   // Clear any pending input state when running a slash command
   if (msg.text?.startsWith('/')) {
@@ -103,36 +125,22 @@ function requireAuth(msg, callback) {
   }
 
   if (!isUserAllowed(userId)) {
-    bot.sendMessage(chatId, `🚫 <b>Access Denied</b>\n\nThis bot is restricted.\nContact the bot admin to request access.`, { parse_mode: 'HTML' });
-    return;
-  }
-  if (!hasApiKey(userId)) {
-    bot.sendMessage(chatId,
-      '🔑 <b>API Key Required</b>\n\nSet your TorBox API key first:\n<code>/setkey YOUR_API_KEY</code>\n\nGet your key at: https://torbox.app/settings',
+    bot.sendMessage(
+      chatId,
+      `🚫 <b>Access Denied</b>\n\n` +
+      `Your Telegram ID: <code>${userId}</code>\n\n` +
+      `This bot is restricted to authorized users.\n` +
+      `Please contact the bot administrator with your ID to request access.`,
       { parse_mode: 'HTML' }
     );
     return;
   }
+  if (!hasApiKey(userId)) {
+    sendNoApiKeyMessage(chatId, userId);
+    return;
+  }
   ensurePlanCached(userId).catch(() => {});
   callback();
-}
-
-// ── Sync user's items from TorBox into SQLite DB ──────────────
-async function syncUserDownloadsToDb(userId, apiKey) {
-  try {
-    const api = createApiClient(apiKey);
-    const plan = getCachedPlan(userId);
-
-    const [tRes, uRes, wRes] = await Promise.all([
-      api.getTorrentList(true).catch(() => ({ data: [] })),
-      (plan === null || plan >= 1) ? api.getUsenetList(true).catch(() => ({ data: [] })) : Promise.resolve({ data: [] }),
-      (plan === null || plan >= 1) ? api.getWebDlList(true).catch(() => ({ data: [] })) : Promise.resolve({ data: [] }),
-    ]);
-
-    for (const t of (tRes?.data || [])) if (t.id) trackDownload(userId, t.id, 'torrent', t.name);
-    for (const u of (uRes?.data || [])) if (u.id) trackDownload(userId, u.id, 'usenet', u.name);
-    for (const w of (wRes?.data || [])) if (w.id) trackDownload(userId, w.id, 'webdl', w.name);
-  } catch (_) {}
 }
 
 // ── /getlink — fresh link on demand ────────────────────────────
@@ -160,8 +168,8 @@ export async function handleGetLink(bot, chatId, userId, type, itemId, isExplici
       // User explicitly requested ZIP archive
       if (isExplicitZip) {
         const zipRes = await api.requestTorrentDl(Number(itemId), null, true).catch(() => null);
-        const zipLink = zipRes?.data;
-        if (zipLink && typeof zipLink === 'string') {
+        const zipLink = extractDownloadUrl(zipRes);
+        if (zipLink) {
           let text = `📦 <b>ZIP Archive Download Link</b>\n\n`;
           text += `📋 <b>Name:</b> ${escapeHtml(truncate(name, 40))}\n\n`;
           text += `${escapeHtml(zipLink)}\n\n`;
@@ -198,11 +206,11 @@ export async function handleGetLink(bot, chatId, userId, type, itemId, isExplici
 
         text += `📄 <b>Individual Direct File Links:</b>\n`;
         topFiles.forEach((f, idx) => {
-          const flink = fileLinkResults[idx]?.data;
+          const flink = extractDownloadUrl(fileLinkResults[idx]);
           const fname = truncate(f.name || f.short_name || `File ${idx + 1}`, 35);
           const fsize = formatBytes(f.size);
           text += `<b>${idx + 1}. ${escapeHtml(fname)}</b> (${escapeHtml(fsize)})\n`;
-          if (flink && typeof flink === 'string') {
+          if (flink) {
             text += `${escapeHtml(flink)}\n\n`;
           } else {
             text += `<i>(Use file list to fetch)</i>\n\n`;
@@ -233,9 +241,9 @@ export async function handleGetLink(bot, chatId, userId, type, itemId, isExplici
       } else if (files.length === 1) {
         const f = files[0];
         const res = await api.requestTorrentDl(Number(itemId), f?.id ?? 0, false).catch(() => null);
-        const link = res?.data;
+        const link = extractDownloadUrl(res);
 
-        if (link && typeof link === 'string') {
+        if (link) {
           let text = `🧲 <b>Single File Download Link</b>\n\n`;
           text += `📄 <b>File:</b> ${escapeHtml(f?.name || name)} (${escapeHtml(formatBytes(f?.size || t?.size))})\n\n`;
           text += `${escapeHtml(link)}\n\n`;
@@ -253,14 +261,115 @@ export async function handleGetLink(bot, chatId, userId, type, itemId, isExplici
       }
     }
 
+    if (type === 'usenet') {
+      const details = await api.getUsenetById(Number(itemId)).catch(() => null);
+      const items = details?.data;
+      const u = Array.isArray(items) ? items.find((x) => String(x.id) === String(itemId)) : items;
+      const files = Array.isArray(u?.files) ? u.files : [];
+      const name = u?.name || `Usenet #${itemId}`;
+
+      // User explicitly requested ZIP archive
+      if (isExplicitZip) {
+        const zipRes = await api.requestUsenetDl(Number(itemId), null, true).catch(() => null);
+        const zipLink = extractDownloadUrl(zipRes);
+        if (zipLink) {
+          let text = `📦 <b>ZIP Archive Download Link</b>\n\n`;
+          text += `📋 <b>Name:</b> ${escapeHtml(truncate(name, 40))}\n\n`;
+          text += `${escapeHtml(zipLink)}\n\n`;
+          text += `⚠️ <i>This ZIP packages all files together.</i>\n`;
+          text += `🕐 <i>Expires in ~1 hour</i>`;
+
+          await bot.editMessageText(text, {
+            chat_id: targetChat, message_id: loading.message_id,
+            parse_mode: 'HTML',
+            reply_markup: {
+              inline_keyboard: [
+                [{ text: '🔄 Refresh ZIP Link', callback_data: `getlink:usenet:${itemId}:zip` }],
+                [{ text: '📤 Upload to Gofile.io ⚡', callback_data: `gofile:usenet:${itemId}` }],
+              ],
+            },
+          });
+          return;
+        }
+      }
+
+      if (files.length > 1) {
+        // Multi-file Usenet: generate direct file links
+        const topFiles = files.slice(0, 5);
+        const fileLinkPromises = topFiles.map((f) =>
+          api.requestUsenetDl(Number(itemId), f.id, false).catch(() => null)
+        );
+        const fileLinkResults = await Promise.all(fileLinkPromises);
+
+        let text = `📂 <b>Multiple Files Detected (${files.length} Files)</b>\n`;
+        text += `📋 <b>Usenet:</b> ${escapeHtml(truncate(name, 40))}\n\n`;
+
+        text += `📄 <b>Individual Direct File Links:</b>\n`;
+        topFiles.forEach((f, idx) => {
+          const flink = extractDownloadUrl(fileLinkResults[idx]);
+          const fname = truncate(f.name || f.short_name || `File ${idx + 1}`, 35);
+          const fsize = formatBytes(f.size);
+          text += `<b>${idx + 1}. ${escapeHtml(fname)}</b> (${escapeHtml(fsize)})\n`;
+          if (flink) {
+            text += `${escapeHtml(flink)}\n\n`;
+          } else {
+            text += `<i>(Generating link…)</i>\n\n`;
+          }
+        });
+
+        if (files.length > 5) {
+          text += `<i>…and ${files.length - 5} more files.</i>\n\n`;
+        }
+
+        text += `🕐 <i>Links expire in ~1 hour</i>`;
+
+        const keyboard = {
+          inline_keyboard: [
+            [{ text: '📦 Request ZIP Archive', callback_data: `getlink:usenet:${itemId}:zip` }],
+            [{ text: '🔄 Refresh Direct Links', callback_data: `getlink:usenet:${itemId}` }],
+            [{ text: '📤 Upload to Gofile.io ⚡', callback_data: `gofile:usenet:${itemId}` }],
+          ],
+        };
+
+        await bot.editMessageText(text, {
+          chat_id: targetChat, message_id: loading.message_id,
+          parse_mode: 'HTML', reply_markup: keyboard,
+        });
+        return;
+      } else if (files.length === 1) {
+        const f = files[0];
+        const res = await api.requestUsenetDl(Number(itemId), f?.id ?? 0, false).catch(() => null);
+        const link = extractDownloadUrl(res);
+
+        if (link) {
+          let text = `📰 <b>Single File Download Link</b>\n\n`;
+          text += `📄 <b>File:</b> ${escapeHtml(f?.name || name)} (${escapeHtml(formatBytes(f?.size || u?.size))})\n\n`;
+          text += `${escapeHtml(link)}\n\n`;
+          text += `🕐 <i>Expires in ~1 hour</i>`;
+
+          await bot.editMessageText(text, {
+            chat_id: targetChat, message_id: loading.message_id,
+            parse_mode: 'HTML',
+            reply_markup: {
+              inline_keyboard: [
+                [{ text: '🔄 Refresh Link', callback_data: `getlink:usenet:${itemId}` }],
+                [{ text: '📤 Upload to Gofile.io ⚡', callback_data: `gofile:usenet:${itemId}` }],
+              ],
+            },
+          });
+          return;
+        }
+      }
+    }
+
     // Default fallback link request
     let result;
     if (type === 'torrent') result = await api.requestTorrentDl(Number(itemId), null, true);
     else if (type === 'usenet') result = await api.requestUsenetDl(Number(itemId), null, true);
     else if (type === 'webdl') result = await api.requestWebDlDl(Number(itemId), null, true);
 
-    const link = result?.data;
-    if (link && typeof link === 'string') {
+    const link = extractDownloadUrl(result);
+    if (link) {
       const typeEmoji = { torrent: '🧲', usenet: '📰', webdl: '🌐' }[type] || '📦';
       await bot.editMessageText(
         `${typeEmoji} <b>Fresh Download Link</b>\n\n` +
@@ -294,13 +403,9 @@ export async function handleGetLink(bot, chatId, userId, type, itemId, isExplici
 async function handleMyDownloads(bot, msg) {
   const userId = msg.from?.id || msg.chat.id;
   const chatId = msg.chat.id;
-  const apiKey = getUserApiKey(userId);
   const { getUserDownloads } = await import('./db.js');
 
-  // Sync latest list from TorBox first
-  await syncUserDownloadsToDb(userId, apiKey);
-
-  const items = getUserDownloads(userId);
+  const items = await getUserDownloads(userId);
 
   if (!items.length) {
     await bot.sendMessage(chatId, '📭 <b>No tracked downloads yet.</b>\n\nAdd a torrent, NZB, or web link and the bot will monitor it automatically.', { parse_mode: 'HTML' });
@@ -312,7 +417,8 @@ async function handleMyDownloads(bot, msg) {
 
   for (const item of items.slice(0, 10)) {
     const typeEmoji = { torrent: '🧲', usenet: '📰', webdl: '🌐' }[item.type] || '📦';
-    const name = truncate(item.name || `#${item.item_id}`, 35);
+    const cleanName = resolveCleanDownloadName(item, item.name || `#${item.item_id}`);
+    const name = truncate(cleanName, 35);
     const status = item.last_status || 'tracking…';
     const isDone = item.is_done === 1;
 
@@ -320,7 +426,7 @@ async function handleMyDownloads(bot, msg) {
     text += `  ${escapeHtml(status)} | ID: <code>${item.item_id}</code>\n\n`;
 
     if (isDone) {
-      btns.push([{ text: `🔗 Get Link: ${truncate(name, 20)}`, callback_data: `getlink:${item.type}:${item.item_id}` }]);
+      btns.push([{ text: `🔗 Get Link: ${truncate(cleanName, 20)}`, callback_data: `getlink:${item.type}:${item.item_id}` }]);
     }
   }
 
@@ -341,20 +447,19 @@ async function handleStatus(bot, msg) {
     const api = createApiClient(apiKey);
     const plan = getCachedPlan(userId);
 
-    const [torrentRes, usenetRes, webdlRes] = await Promise.all([
+    const [torrentRes, usenetRes, webdlRes, userTorrents, userUsenets, userWebdls] = await Promise.all([
       api.getTorrentList(true).catch(() => ({ data: [] })),
       (plan === null || plan >= 1) ? api.getUsenetList(true).catch(() => ({ data: [] })) : Promise.resolve({ data: [] }),
       (plan === null || plan >= 1) ? api.getWebDlList(true).catch(() => ({ data: [] })) : Promise.resolve({ data: [] }),
+      getUserTrackedItemIds(userId, 'torrent'),
+      getUserTrackedItemIds(userId, 'usenet'),
+      getUserTrackedItemIds(userId, 'webdl'),
     ]);
 
-    const torrents = torrentRes?.data || [];
-    const usenets  = usenetRes?.data || [];
-    const webdls   = webdlRes?.data || [];
-
-    // Track all in DB while checking status
-    for (const t of torrents) if (t.id) trackDownload(userId, t.id, 'torrent', t.name);
-    for (const u of usenets)  if (u.id) trackDownload(userId, u.id, 'usenet', u.name);
-    for (const w of webdls)   if (w.id) trackDownload(userId, w.id, 'webdl', w.name);
+    // STRICT: Only match downloads tracked for this specific user in MongoDB/SQLite
+    const torrents = (torrentRes?.data || []).filter(t => userTorrents.has(String(t.id)) || (t.hash && userTorrents.has(String(t.hash).toLowerCase())));
+    const usenets  = (usenetRes?.data || []).filter(u => userUsenets.has(String(u.id)) || (u.hash && userUsenets.has(String(u.hash).toLowerCase())));
+    const webdls   = (webdlRes?.data || []).filter(w => userWebdls.has(String(w.id)));
 
     const activeTorrents = torrents.filter(t => {
       const s = (t.download_state || t.status || '').toLowerCase();
@@ -376,7 +481,7 @@ async function handleStatus(bot, msg) {
     if (totalActive === 0) {
       await bot.editMessageText(
         '🟢 <b>No Active Downloads</b>\n\n' +
-        'All your downloads are either finished or idle.\n' +
+        'All your tracked downloads are either finished or idle.\n' +
         'Use /mydownloads or /torrents to view completed items.',
         { chat_id: chatId, message_id: loading.message_id, parse_mode: 'HTML' }
       );
@@ -390,7 +495,8 @@ async function handleStatus(bot, msg) {
       for (const t of activeTorrents) {
         const pct = t.progress != null ? t.progress * 100 : 0;
         const status = t.download_state || t.status || 'downloading';
-        text += `• <b>${escapeHtml(truncate(t.name, 32))}</b>\n`;
+        const cleanName = resolveCleanDownloadName(t, t.name);
+        text += `• <b>${escapeHtml(truncate(cleanName, 32))}</b>\n`;
         text += `  🆔 <code>${t.id}</code> | ${escapeHtml(status)} | ${escapeHtml(formatBytes(t.size))}\n`;
         text += `  <code>${progressBar(pct)}</code>\n`;
         if (t.download_speed) text += `  ⬇ ${escapeHtml(formatBytes(t.download_speed))}/s`;
@@ -404,7 +510,8 @@ async function handleStatus(bot, msg) {
       for (const u of activeUsenets) {
         const pct = u.progress != null ? u.progress * 100 : 0;
         const status = u.download_state || u.status || 'downloading';
-        text += `• <b>${escapeHtml(truncate(u.name, 32))}</b>\n`;
+        const cleanName = resolveCleanDownloadName(u, u.name);
+        text += `• <b>${escapeHtml(truncate(cleanName, 32))}</b>\n`;
         text += `  🆔 <code>${u.id}</code> | ${escapeHtml(status)} | ${escapeHtml(formatBytes(u.size))}\n`;
         text += `  <code>${progressBar(pct)}</code>\n\n`;
       }
@@ -415,7 +522,8 @@ async function handleStatus(bot, msg) {
       for (const w of activeWebdls) {
         const pct = w.progress != null ? w.progress * 100 : 0;
         const status = w.download_state || w.status || 'downloading';
-        text += `• <b>${escapeHtml(truncate(w.name, 32))}</b>\n`;
+        const cleanName = resolveCleanDownloadName(w, w.name);
+        text += `• <b>${escapeHtml(truncate(cleanName, 32))}</b>\n`;
         text += `  🆔 <code>${w.id}</code> | ${escapeHtml(status)} | ${escapeHtml(formatBytes(w.size))}\n`;
         text += `  <code>${progressBar(pct)}</code>\n\n`;
       }
@@ -478,14 +586,27 @@ bot.onText(/\/start/, async (msg) => {
 
   const hasKey = hasApiKey(userId);
   const plan   = getCachedPlan(userId);
+  const hasPersonal = hasPersonalApiKey(userId);
+  const hasMain = isUserAllowedMain(userId);
   const PLAN_LABEL = { 0: '🆓 Free', 1: '🥈 Essential', 2: '🥇 Pro', 3: '💎 Ultimate' };
+
+  let keyStatusStr = '';
+  if (hasPersonal) {
+    keyStatusStr = '🔑 Key Status: <b>Active (Personal Key)</b>\n\n';
+  } else if (hasMain) {
+    keyStatusStr = '🔑 Key Status: <b>Active (Shared Main Account)</b>\n\n';
+  } else if (hasKey) {
+    keyStatusStr = '🔑 Key Status: <b>Active & Ready to use</b>\n\n';
+  } else {
+    keyStatusStr = '🔑 Key Status: ⚠️ <b>No API key set</b>\n👉 Run <code>/setkey YOUR_API_KEY</code> to connect your TorBox account.\n\n';
+  }
 
   await bot.sendMessage(chatId,
     `👋 <b>Welcome, ${escapeHtml(firstName)}!</b>\n\n` +
     `🆔 <b>Your Telegram ID:</b> <code>${userId}</code>\n` +
     `🚀 <b>TorBox Manager Bot</b>\n` +
     (plan !== null ? `🏷 Plan: <b>${escapeHtml(PLAN_LABEL[plan] || `Plan ${plan}`)}</b>\n` : '') +
-    '🔑 Key Status: <b>Active & Ready to use</b>\n\n' +
+    keyStatusStr +
     `<b>📦 Torrents</b>\n` +
     `/torrents — List all\n` +
     `/addmagnet — Add magnet (auto-notifies when ready)\n` +
@@ -498,7 +619,8 @@ bot.onText(/\/start/, async (msg) => {
       : `<b>📰 Usenet & 🌐 WebDL</b> — Requires Essential plan\n\n`) +
     `<b>🔍 Search</b> — /search\n\n` +
     `<b>👤 Account</b> — /me | /stats | /subscriptions\n\n` +
-    `⚙️ /setkey — Set personal API key (optional) | /help — Full commands\n\n` +
+    `⚙️ /setkey — Set TorBox API key | /mykey — View key\n` +
+    `📖 /help — Full command guide\n\n` +
     `🔐 <b>Download links are sent privately to you only.</b>`,
     { parse_mode: 'HTML' }
   );
@@ -520,7 +642,10 @@ bot.onText(/\/help/, (msg) => {
     `<i>Send .torrent file directly to upload</i>\n\n` +
     `<b>📥 My Downloads</b>\n` +
     `/mydownloads — All tracked downloads + status\n` +
-    `/getlink &lt;type&gt; &lt;id&gt; — Get fresh download link anytime\n\n` +
+    `/status — Active downloads in progress\n` +
+    `/getlink &lt;type&gt; &lt;id&gt; — Get fresh download link anytime\n` +
+    `/cleartracked [all] — Clear completed or all history from database\n` +
+    `/untrack &lt;id&gt; — Untrack an item from database\n\n` +
     `<b>📰 Usenet (Essential+)</b>\n` +
     `/usenet — List | /addnzb &lt;url&gt; — Add NZB\n` +
     `/nzb &lt;id&gt; — Details + controls\n` +
@@ -533,21 +658,22 @@ bot.onText(/\/help/, (msg) => {
     `<b>📋 Queue</b> — /queued\n\n` +
     `<b>🔔 Notifications (Essential+)</b> — /notifications\n\n` +
     `<b>👤 Account & Settings</b>\n` +
-    `/me — Profile & plan | /stats | /subscriptions\n` +
-    `/setkey &lt;key&gt; — Set personal API key (optional)\n` +
-    `/mykey — Show key\n\n`;
+    `/me — Profile & plan info | /stats\n` +
+    `/setkey &lt;key&gt; — Set personal TorBox API key\n` +
+    `/mykey — View current key status & plan\n` +
+    `/delkey — Remove personal API key\n\n`;
 
   if (isUserAdmin) {
     helpText +=
       `<b>🛡️ Admin Commands (Admin Only)</b>\n` +
-      `/regusers — List all registered users, plans & keys\n` +
-      `/setapikey &lt;user_id&gt; &lt;api_key&gt; — Set/update user API key\n` +
+      `/allow &lt;user_id&gt; [main] — Grant user access ('main' shares owner API key securely)\n` +
+      `/remove &lt;user_id&gt; — Revoke user access (or reply to message)\n` +
+      `/listusers — List authorized users & plans\n` +
+      `/setapikey &lt;user_id&gt; &lt;key&gt; — Set user's TorBox API key\n` +
       `/getkey &lt;user_id&gt; — View user's API key\n` +
       `/delkey &lt;user_id&gt; — Delete user API key\n` +
       `/userinfo &lt;user_id&gt; — User breakdown & stats\n` +
-      `/adduser &lt;user_id&gt; — Whitelist/grant user access\n` +
-      `/removeuser &lt;user_id&gt; — Revoke user access\n` +
-      `/listusers — List allowed whitelist users\n` +
+      `/regusers — List all registered users in database\n` +
       `/broadcast &lt;message&gt; — Send message to all users\n` +
       `/adminpanel — Web admin panel link\n\n`;
   }
@@ -562,25 +688,103 @@ bot.onText(/\/help/, (msg) => {
 
 // ── /setkey ───────────────────────────────────────────────────
 bot.onText(/\/setkey(?:\s+(.+))?/, async (msg, match) => {
-  requireAuth(msg, async () => {
-    const userId = msg.from?.id || msg.chat.id;
+  const userId = msg.from?.id || msg.chat.id;
+  const chatId = msg.chat.id;
+
+  if (msg.chat.type === 'private' && userId) {
     upsertUser(userId, { username: msg.from?.username, firstName: msg.from?.first_name });
-    const key = match?.[1]?.trim();
-    if (!key) { bot.sendMessage(msg.chat.id, '🔑 Usage: <code>/setkey YOUR_API_KEY</code>', { parse_mode: 'HTML' }); return; }
-    await handleSetKey(bot, msg, key);
-  });
+    setPrivateChatId(userId, chatId);
+  }
+
+  if (!isUserAllowed(userId)) {
+    bot.sendMessage(chatId, `🚫 <b>Access Denied</b>\n\nYour Telegram ID: <code>${userId}</code>\nContact the bot admin to request access.`, { parse_mode: 'HTML' });
+    return;
+  }
+
+  const key = match?.[1]?.trim();
+  if (!key) {
+    sessions.set(userId, { awaitingInput: 'setkey' });
+    bot.sendMessage(chatId,
+      `🔑 <b>Set TorBox API Key</b>\n\n` +
+      `Please send your TorBox API key now as a message, or use:\n` +
+      `<code>/setkey YOUR_API_KEY</code>\n\n` +
+      `Get your key at: https://torbox.app/settings`,
+      { parse_mode: 'HTML', reply_markup: { force_reply: true } }
+    );
+    return;
+  }
+
+  await handleSetKey(bot, msg, key);
 });
 
 // ── /mykey ────────────────────────────────────────────────────
 bot.onText(/\/mykey/, (msg) => {
   const userId = msg.from?.id || msg.chat.id;
-  if (!isUserAllowed(userId)) return;
+  const chatId = msg.chat.id;
+
+  if (!isUserAllowed(userId)) {
+    bot.sendMessage(chatId, `🚫 <b>Access Denied</b>\n\nYour Telegram ID: <code>${userId}</code>`, { parse_mode: 'HTML' });
+    return;
+  }
+
   const key = getUserApiKey(userId);
-  if (!key) { bot.sendMessage(msg.chat.id, '❌ No API key set. Use <code>/setkey YOUR_KEY</code>', { parse_mode: 'HTML' }); return; }
-  const masked = `${key.substring(0, 4)}${'*'.repeat(Math.max(0, key.length - 8))}${key.slice(-4)}`;
+  if (!key) {
+    sendNoApiKeyMessage(chatId, userId);
+    return;
+  }
+
   const plan = getCachedPlan(userId);
   const PLAN = { 0: 'Free', 1: 'Essential', 2: 'Pro', 3: 'Ultimate' };
-  bot.sendMessage(msg.chat.id, `🔑 API key: <code>${masked}</code>${plan !== null ? `\n🏷 Plan: <b>${PLAN[plan] || `Plan ${plan}`}</b>` : ''}`, { parse_mode: 'HTML' });
+  const planStr = plan !== null ? (PLAN[plan] || `Plan ${plan}`) : 'Default';
+
+  // If user has shared main access (and is not bot admin and has no personal key)
+  if (!isAdmin(userId) && !hasPersonalApiKey(userId) && isUserAllowedMain(userId)) {
+    bot.sendMessage(chatId,
+      `🔑 <b>TorBox Access:</b> <code>[Protected — Main Account]</code>\n` +
+      `🏷 Plan: <b>${planStr}</b>\n` +
+      `🛡️ Access: <b>Shared Bot Access</b>\n\n` +
+      `<i>The main TorBox account key is managed securely by the bot owner and hidden from view.</i>\n\n` +
+      `💡 <i>To link your personal TorBox account instead, use <code>/setkey YOUR_KEY</code>.</i>`,
+      { parse_mode: 'HTML' }
+    );
+    return;
+  }
+
+  const masked = `${key.substring(0, 4)}${'*'.repeat(Math.max(0, key.length - 8))}${key.slice(-4)}`;
+  const isPersonal = hasPersonalApiKey(userId);
+  const label = isPersonal ? 'Personal' : (isAdmin(userId) ? 'Admin' : 'Inherited');
+
+  bot.sendMessage(chatId,
+    `🔑 <b>${label} API Key:</b> <code>${masked}</code>\n` +
+    (plan !== null ? `🏷 Plan: <b>${planStr}</b>\n\n` : '\n') +
+    `💡 <i>Use <code>/setkey &lt;new_key&gt;</code> to update or <code>/delkey</code> to remove.</i>`,
+    { parse_mode: 'HTML' }
+  );
+});
+
+// ── /delkey ───────────────────────────────────────────────────
+bot.onText(/\/delkey(?:\s+(\d+))?/, async (msg, match) => {
+  const userId = msg.from?.id || msg.chat.id;
+  const chatId = msg.chat.id;
+
+  if (!isUserAllowed(userId)) return;
+  const targetId = match?.[1];
+
+  if (targetId && isAdmin(userId)) {
+    removeUserApiKey(targetId);
+    bot.sendMessage(chatId, `🗑 API key removed for user <code>${targetId}</code>.`, { parse_mode: 'HTML' });
+    return;
+  }
+
+  if (hasPersonalApiKey(userId)) {
+    removeUserApiKey(userId);
+    bot.sendMessage(chatId, `🗑 Your personal TorBox API key has been removed.`, { parse_mode: 'HTML' });
+  } else if (isAdmin(userId)) {
+    removeUserApiKey(userId);
+    bot.sendMessage(chatId, `🗑 Admin API key removed.`, { parse_mode: 'HTML' });
+  } else {
+    bot.sendMessage(chatId, `ℹ️ You do not have a personal API key set.`, { parse_mode: 'HTML' });
+  }
 });
 
 // ── /getlink <type> <id> ──────────────────────────────────────
@@ -592,11 +796,8 @@ bot.onText(/\/getlink(?:\s+(\w+))?(?:\s+(\d+))?/, async (msg, match) => {
     const id   = match?.[2];
 
     if (!type || !id) {
-      const apiKey = getUserApiKey(userId);
-      await syncUserDownloadsToDb(userId, apiKey);
-
       const { getUserDownloads } = await import('./db.js');
-      const items = getUserDownloads(userId).filter(i => i.is_done === 1);
+      const items = (await getUserDownloads(userId)).filter(i => i.is_done === 1);
 
       if (!items.length) {
         bot.sendMessage(chatId,
@@ -608,10 +809,13 @@ bot.onText(/\/getlink(?:\s+(\w+))?(?:\s+(\d+))?/, async (msg, match) => {
         return;
       }
 
-      const btns = items.slice(0, 10).map(i => [{
-        text: `${{ torrent: '🧲', usenet: '📰', webdl: '🌐' }[i.type]} ${truncate(i.name || `#${i.item_id}`, 28)}`,
-        callback_data: `getlink:${i.type}:${i.item_id}`,
-      }]);
+      const btns = items.slice(0, 10).map(i => {
+        const cleanName = resolveCleanDownloadName(i, i.name || `#${i.item_id}`);
+        return [{
+          text: `${{ torrent: '🧲', usenet: '📰', webdl: '🌐' }[i.type]} ${truncate(cleanName, 28)}`,
+          callback_data: `getlink:${i.type}:${i.item_id}`,
+        }];
+      });
 
       bot.sendMessage(chatId, '🔗 <b>Get Download Link</b>\n\nSelect which download:', {
         parse_mode: 'HTML',
@@ -627,6 +831,55 @@ bot.onText(/\/getlink(?:\s+(\w+))?(?:\s+(\d+))?/, async (msg, match) => {
 // ── /mydownloads ──────────────────────────────────────────────
 bot.onText(/\/mydownloads/, (msg) => requireAuth(msg, () => handleMyDownloads(bot, msg)));
 bot.onText(/\/status/, (msg) => requireAuth(msg, () => handleStatus(bot, msg)));
+
+// ── /cleartracked [all] — Clear tracked downloads history from DB ───────
+bot.onText(/\/cleartracked(?:\s+(all))?/, async (msg, match) => {
+  requireAuth(msg, async () => {
+    const userId = msg.from?.id || msg.chat.id;
+    const isAll = match?.[1]?.toLowerCase() === 'all';
+    const deletedCount = await clearUserTracked(userId, !isAll);
+    if (isAll) {
+      bot.sendMessage(msg.chat.id, `🗑 <b>Cleared All Tracked Downloads</b>\n\nRemoved ${deletedCount} record(s) from your database history.`, { parse_mode: 'HTML' });
+    } else {
+      bot.sendMessage(msg.chat.id, `🧹 <b>Cleaned Completed Downloads</b>\n\nRemoved ${deletedCount} completed record(s) from your database history.\n\n<i>To clear both active & completed items:</i> <code>/cleartracked all</code>`, { parse_mode: 'HTML' });
+    }
+  });
+});
+
+// ── /untrack <id> — Remove a specific item from tracked database ───────
+bot.onText(/\/untrack(?:\s+(\w+))?(?:\s+(\d+))?/, async (msg, match) => {
+  requireAuth(msg, async () => {
+    const userId = msg.from?.id || msg.chat.id;
+    let type = match?.[1]?.toLowerCase();
+    let id = match?.[2];
+
+    if (type && !id && /^\d+$/.test(type)) {
+      id = type;
+      type = null;
+    }
+
+    if (!id) {
+      bot.sendMessage(msg.chat.id, 'Usage: <code>/untrack [torrent|usenet|webdl] &lt;id&gt;</code>\nExample: <code>/untrack 12345</code>', { parse_mode: 'HTML' });
+      return;
+    }
+
+    let deleted = 0;
+    if (type) {
+      deleted = await deleteTrackedDownload(userId, id, type);
+    } else {
+      const d1 = await deleteTrackedDownload(userId, id, 'torrent');
+      const d2 = await deleteTrackedDownload(userId, id, 'usenet');
+      const d3 = await deleteTrackedDownload(userId, id, 'webdl');
+      deleted = d1 + d2 + d3;
+    }
+
+    if (deleted > 0) {
+      bot.sendMessage(msg.chat.id, `✅ Untracked download <code>${id}</code> from your database.`, { parse_mode: 'HTML' });
+    } else {
+      bot.sendMessage(msg.chat.id, `ℹ️ Item <code>${id}</code> was not found in your tracked downloads.`, { parse_mode: 'HTML' });
+    }
+  });
+});
 
 bot.onText(/\/debrid(?:\s+(.+))?/, async (msg, match) => {
   requireAuth(msg, async () => {
@@ -738,14 +991,7 @@ bot.onText(/\/gofile(?:\s+([a-z]+)\s+(\d+))?/, async (msg, match) => {
 // ACCOUNT COMMANDS
 // =============================================================
 
-bot.onText(/\/me/, (msg) => {
-  const userId = msg.from?.id || msg.chat.id;
-  if (!isAdmin(userId)) {
-    bot.sendMessage(msg.chat.id, '🚫 The /me command is restricted to admin only.');
-    return;
-  }
-  requireAuth(msg, () => handleMe(bot, msg));
-});
+bot.onText(/\/me/, (msg) => requireAuth(msg, () => handleMe(bot, msg)));
 bot.onText(/\/stats/, (msg) => requireAuth(msg, () => handleStats(bot, msg)));
 bot.onText(/\/subscriptions/, (msg) => requireAuth(msg, () => handleSubscriptions(bot, msg)));
 bot.onText(/\/transactions/, (msg) => requireAuth(msg, () => handleTransactions(bot, msg)));
@@ -913,35 +1159,132 @@ bot.onText(/\/delkey(?:\s+(\d+))?/, async (msg, match) => {
   bot.sendMessage(chatId, `🗑 API key completely removed for user <code>${targetId}</code> in MongoDB.`, { parse_mode: 'HTML' });
 });
 
-bot.onText(/\/adduser(?:\s+(\d+))?/, async (msg, match) => {
+bot.onText(/\/(?:allow|adduser)(?:\s+(.+))?/, async (msg, match) => {
   const userId = msg.from?.id;
   const chatId = msg.chat.id;
   if (!isAdmin(userId)) { bot.sendMessage(chatId, '🚫 Admin only.'); return; }
-  const targetId = match?.[1];
-  if (!targetId) { bot.sendMessage(chatId, '❌ Usage: <code>/adduser &lt;telegram_id&gt;</code>', { parse_mode: 'HTML' }); return; }
-  addAllowedUser(targetId, userId);
-  bot.sendMessage(chatId, `✅ User <code>${targetId}</code> added to whitelist.`, { parse_mode: 'HTML' });
+
+  const raw = match?.[1]?.trim() || '';
+  const tokens = raw ? raw.split(/\s+/) : [];
+
+  let targetId = null;
+  let allowMain = false;
+
+  for (const token of tokens) {
+    if (/^\d+$/.test(token)) {
+      targetId = token;
+    } else if (token.toLowerCase() === 'main') {
+      allowMain = true;
+    }
+  }
+
+  if (!targetId && msg.reply_to_message?.from?.id) {
+    targetId = String(msg.reply_to_message.from.id);
+  }
+
+  if (!targetId) {
+    bot.sendMessage(chatId,
+      '❌ <b>Usage:</b>\n' +
+      '• <code>/allow &lt;telegram_id&gt;</code> — User uses their own API key via <code>/setkey</code>\n' +
+      '• <code>/allow &lt;telegram_id&gt; main</code> — User gets shared access to main TorBox API (hidden from them)\n\n' +
+      '<i>Or reply to any user message with <code>/allow</code> or <code>/allow main</code></i>',
+      { parse_mode: 'HTML' }
+    );
+    return;
+  }
+
+  addAllowedUser(targetId, userId, allowMain);
+  upsertUser(targetId, {
+    username: msg.reply_to_message?.from?.username,
+    firstName: msg.reply_to_message?.from?.first_name,
+    isAllowed: true,
+    allowMain,
+  });
+
+  if (allowMain) {
+    bot.sendMessage(chatId,
+      `✅ <b>User <code>${targetId}</code> granted access with MAIN API KEY!</b>\n\n` +
+      `🔑 <b>Access Mode:</b> Main / Owner Account (Shared)\n` +
+      `🛡️ <b>Security:</b> API key is protected and will <b>never</b> be shown to this user.\n` +
+      `🚀 <b>Ready:</b> They can use the bot immediately without entering an API key.`,
+      { parse_mode: 'HTML' }
+    );
+
+    const targetChat = getPrivateChatId(targetId) || targetId;
+    bot.sendMessage(targetChat,
+      `🎉 <b>Access Granted!</b>\n\n` +
+      `You have been granted access to this TorBox Bot with shared access to the main account.\n\n` +
+      `🚀 <b>The bot is active and ready to use!</b>\n` +
+      `Try sending a magnet link or use /help to view all features.\n\n` +
+      `🔐 <i>All your downloads and notifications remain private to your Telegram account.</i>`,
+      { parse_mode: 'HTML' }
+    ).catch(() => {});
+  } else {
+    bot.sendMessage(chatId,
+      `✅ <b>User <code>${targetId}</code> granted access (Personal Key Required).</b>\n\n` +
+      `They must connect their own TorBox API key using <code>/setkey YOUR_API_KEY</code> before downloading.`,
+      { parse_mode: 'HTML' }
+    );
+
+    const targetChat = getPrivateChatId(targetId) || targetId;
+    bot.sendMessage(targetChat,
+      `🎉 <b>Access Granted!</b>\n\n` +
+      `You have been authorized by the bot owner.\n\n` +
+      `To connect your TorBox account, please run:\n` +
+      `<code>/setkey YOUR_API_KEY</code>\n\n` +
+      `Get your key at: https://torbox.app/settings`,
+      { parse_mode: 'HTML' }
+    ).catch(() => {});
+  }
 });
 
-bot.onText(/\/removeuser(?:\s+(\d+))?/, async (msg, match) => {
+bot.onText(/\/(?:remove|removeuser|revoke)(?:\s+(\d+))?/, async (msg, match) => {
   const userId = msg.from?.id;
   const chatId = msg.chat.id;
   if (!isAdmin(userId)) { bot.sendMessage(chatId, '🚫 Admin only.'); return; }
-  const targetId = match?.[1];
-  if (!targetId) { bot.sendMessage(chatId, '❌ Usage: <code>/removeuser &lt;telegram_id&gt;</code>', { parse_mode: 'HTML' }); return; }
+
+  let targetId = match?.[1];
+  if (!targetId && msg.reply_to_message?.from?.id) {
+    targetId = String(msg.reply_to_message.from.id);
+  }
+
+  if (!targetId) {
+    bot.sendMessage(chatId, '❌ Usage: <code>/remove &lt;telegram_id&gt;</code> (or reply with <code>/remove</code>)', { parse_mode: 'HTML' });
+    return;
+  }
+
   removeAllowedUser(targetId);
-  bot.sendMessage(chatId, `✅ User <code>${targetId}</code> removed from whitelist.`, { parse_mode: 'HTML' });
+  upsertUser(targetId, { isAllowed: false, allowMain: false });
+  bot.sendMessage(chatId, `🚫 <b>User <code>${targetId}</code> access revoked.</b>`, { parse_mode: 'HTML' });
+
+  const targetChat = getPrivateChatId(targetId) || targetId;
+  bot.sendMessage(targetChat, `⚠️ <b>Your access to this bot has been revoked by the administrator.</b>`, { parse_mode: 'HTML' }).catch(() => {});
 });
 
-bot.onText(/\/listusers/, (msg) => {
+bot.onText(/\/(?:listusers|allowed|users)/, (msg) => {
   const userId = msg.from?.id;
   const chatId = msg.chat.id;
   if (!isAdmin(userId)) { bot.sendMessage(chatId, '🚫 Admin only.'); return; }
   if (isOpenAccess()) { bot.sendMessage(chatId, '🌍 <b>Open access mode</b> — no users in whitelist yet.', { parse_mode: 'HTML' }); return; }
   const users = listAllowedUsers();
-  const text = users.length
-    ? `👥 <b>Allowed Users</b> (${users.length})\n\n` + users.map(u => `• <code>${u.user_id}</code> ${u.username ? `@${escapeHtml(u.username)}` : escapeHtml(u.first_name || '')}`).join('\n')
-    : '📭 Whitelist is empty.';
+  if (!users.length) {
+    bot.sendMessage(chatId, '📭 Whitelist is empty.', { parse_mode: 'HTML' });
+    return;
+  }
+
+  const PLAN_NAMES = { 0: 'Free', 1: 'Essential', 2: 'Pro', 3: 'Ultimate' };
+  let text = `👥 <b>Allowed Users</b> (${users.length})\n\n`;
+  for (const u of users) {
+    const hasOwnKey = hasPersonalApiKey(u.user_id);
+    const hasMain = isUserAllowedMain(u.user_id);
+    const plan = getCachedPlan(u.user_id);
+    const planStr = plan !== null ? (PLAN_NAMES[plan] || `Plan ${plan}`) : 'Default';
+    const keyTag = hasOwnKey ? '🔑 Personal Key' : (hasMain ? '🌟 Main Account Access (Key Hidden)' : '⏳ Key Required');
+    const nameStr = u.username ? `@${escapeHtml(u.username)}` : escapeHtml(u.first_name || 'User');
+    text += `• <code>${u.user_id}</code> (${nameStr})\n  └ ${keyTag} | Plan: ${planStr}\n`;
+  }
+  text += `\n💡 <i>Use <code>/allow &lt;id&gt; main</code> or <code>/allow &lt;id&gt;</code> to change access mode.</i>`;
+  text += `\n💡 <i>Use <code>/remove &lt;id&gt;</code> to revoke access.</i>`;
   bot.sendMessage(chatId, text, { parse_mode: 'HTML' });
 });
 
@@ -981,7 +1324,7 @@ bot.on('document', async (msg) => {
   const userId = msg.from?.id || msg.chat.id;
   const chatId = msg.chat.id;
   if (!isUserAllowed(userId)) return;
-  if (!hasApiKey(userId)) { bot.sendMessage(chatId, '🔑 Set your API key first: <code>/setkey YOUR_KEY</code>', { parse_mode: 'HTML' }); return; }
+  if (!hasApiKey(userId)) { sendNoApiKeyMessage(chatId, userId); return; }
 
   upsertUser(userId, { username: msg.from?.username, firstName: msg.from?.first_name });
   if (msg.chat.type === 'private') setPrivateChatId(userId, chatId);
@@ -1045,21 +1388,21 @@ bot.on('text', async (msg) => {
 
   // Magnet link
   if (text.startsWith('magnet:')) {
-    if (!hasApiKey(userId)) { bot.sendMessage(chatId, '🔑 Set your API key first: <code>/setkey YOUR_KEY</code>', { parse_mode: 'HTML' }); return; }
+    if (!hasApiKey(userId)) { sendNoApiKeyMessage(chatId, userId); return; }
     await handleAddMagnet(bot, chatId, text, userId);
     return;
   }
 
   // 40-char infohash → auto cache check
   if (isInfohash(text)) {
-    if (!hasApiKey(userId)) { bot.sendMessage(chatId, '🔑 Set your API key first.'); return; }
+    if (!hasApiKey(userId)) { sendNoApiKeyMessage(chatId, userId); return; }
     await handleCheckCached(bot, chatId, text, userId);
     return;
   }
 
   // HTTP/HTTPS URL → ask type
   if ((text.startsWith('http://') || text.startsWith('https://')) && !text.includes('torbox.app')) {
-    if (!hasApiKey(userId)) { bot.sendMessage(chatId, '🔑 Set your API key first.'); return; }
+    if (!hasApiKey(userId)) { sendNoApiKeyMessage(chatId, userId); return; }
     const plan = getCachedPlan(userId);
     const showUsenet = plan === null || plan >= 1;
     const showWebDl  = plan === null || plan >= 1;
@@ -1096,6 +1439,13 @@ bot.on('text', async (msg) => {
     await handleAddCached(bot, chatId, text, userId);
     return;
   }
+
+  // Auto-detect direct paste of TorBox API key (UUID format)
+  const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+  if (UUID_REGEX.test(text)) {
+    await handleSetKey(bot, msg, text);
+    return;
+  }
 });
 
 // =============================================================
@@ -1110,6 +1460,11 @@ bot.on('callback_query', async (query) => {
   if (!isUserAllowed(userId)) return;
 
   const fakeMsg = { chat: { id: chatId }, from: { id: userId } };
+
+  if (data === 'mydownloads') {
+    await handleMyDownloads(bot, fakeMsg);
+    return;
+  }
 
   if (data.startsWith('getlink:')) {
     const parts = data.split(':');
@@ -1205,6 +1560,8 @@ bot.setMyCommands([
   { command: 'debrid',        description: '🌐 Add debrid / web link' },
   { command: 'mydownloads',   description: '📥 My downloads + get links' },
   { command: 'getlink',       description: '🔗 Get fresh download link anytime' },
+  { command: 'setkey',        description: '🔑 Set personal TorBox API key' },
+  { command: 'mykey',         description: '🔑 View current API key & plan' },
   { command: 'gofile',        description: '📤 Upload item to Gofile.io' },
   { command: 'mygofile',      description: '📤 View my Gofile upload history' },
   { command: 'torrents',      description: '🧲 List torrents' },
@@ -1221,7 +1578,6 @@ bot.setMyCommands([
   { command: 'notifications', description: '🔔 Notifications (Essential+)' },
   { command: 'me',            description: '👤 Profile & plan info' },
   { command: 'stats',         description: '📊 Your stats' },
-  { command: 'setkey',        description: '🔑 Set TorBox API key' },
   { command: 'help',          description: '📖 Full command list' },
 ]).then(() => console.log('✅ Bot commands registered.')).catch(console.error);
 

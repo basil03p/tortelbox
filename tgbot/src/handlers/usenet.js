@@ -2,12 +2,14 @@
 // Handlers: Usenet — Essential+ only, private DL links + HTML formatting
 // ============================================================
 import { createApiClient } from '../api.js';
-import { getUserApiKey, getCachedPlan, checkPlanFeature, getPrivateChatId } from '../session.js';
-import { trackDownload, getUserTrackedItemIds, isItemOwnedByUser } from '../db.js';
+import { getUserApiKey, getCachedPlan, checkPlanFeature, getPrivateChatId, hasPersonalApiKey } from '../session.js';
+import { trackDownload, getUserTrackedItemIds, isItemOwnedByUser, updateDownloadStatus, deleteTrackedDownload } from '../db.js';
 import {
   formatBytes, formatSpeed, formatEta, formatDate,
   statusEmoji, progressBar, truncate, escapeHtml,
   paginate, paginationKeyboard,
+  extractDownloadUrl, getDownloadStateInfo,
+  resolveCleanDownloadName,
 } from '../utils.js';
 
 const PAGE_SIZE = parseInt(process.env.PAGE_SIZE || '5', 10);
@@ -28,16 +30,17 @@ export async function handleUsenetList(bot, msg, page = 0) {
   const loading = await bot.sendMessage(chatId, '⏳ Fetching usenet downloads…');
   try {
     const api = createApiClient(apiKey);
-    const data = await api.getUsenetList();
+    const data = await api.getUsenetList(true);
     const userItemIds = await getUserTrackedItemIds(userId, 'usenet');
-    const adminId = process.env.BOT_ADMIN_ID ? String(process.env.BOT_ADMIN_ID).trim() : null;
-    const isUserAdmin = adminId && String(userId) === adminId;
 
     const allItems = data?.data || [];
-    const items = allItems.filter((u) => isUserAdmin || userItemIds.has(String(u.id)));
+    // STRICT: Only show usenet downloads tracked for this user in MongoDB/SQLite database
+    const items = allItems.filter((u) =>
+      userItemIds.has(String(u.id)) || (u.hash && userItemIds.has(String(u.hash).toLowerCase()))
+    );
 
     if (!items.length) {
-      await bot.editMessageText('📭 No usenet downloads found for your account.\n\nUse /addnzb <url> or send an .nzb file.', { chat_id: chatId, message_id: loading.message_id });
+      await bot.editMessageText('📭 No tracked usenet downloads found for your account.\n\nUse /addnzb <url> or send an .nzb file.', { chat_id: chatId, message_id: loading.message_id });
       return;
     }
 
@@ -46,15 +49,17 @@ export async function handleUsenetList(bot, msg, page = 0) {
     const rowBtns = [];
 
     for (const u of pageItems) {
-      const status = u.download_state || u.status || 'unknown';
-      const pct = u.progress != null ? u.progress * 100 : 0;
-      const name = truncate(u.name, 35);
-      text += `${statusEmoji(status)} <b>${escapeHtml(name)}</b>\n`;
-      text += `  🆔 <code>${u.id}</code> | ${escapeHtml(status)} | ${escapeHtml(formatBytes(u.size))}\n`;
+      const stateInfo = getDownloadStateInfo(u);
+      const rawPct = u.progress != null ? u.progress : 0;
+      const pct = rawPct > 1 ? rawPct : rawPct * 100;
+      const cleanName = resolveCleanDownloadName(u, u.name);
+      const name = truncate(cleanName, 35);
+      text += `${statusEmoji(stateInfo.status)} <b>${escapeHtml(name)}</b>\n`;
+      text += `  🆔 <code>${u.id}</code> | ${escapeHtml(stateInfo.status)} | ${escapeHtml(formatBytes(u.size))}\n`;
       text += `  <code>${progressBar(pct)}</code>\n`;
       if (u.download_speed) text += `  ⬇ ${escapeHtml(formatSpeed(u.download_speed))}\n`;
       text += '\n';
-      rowBtns.push([{ text: `📋 ${truncate(u.name, 20)}`, callback_data: `usenet_info:${u.id}` }]);
+      rowBtns.push([{ text: `📋 ${truncate(cleanName, 20)}`, callback_data: `usenet_info:${u.id}` }]);
     }
 
     const keyboard = paginationKeyboard('usenet_list', p, totalPages);
@@ -75,16 +80,17 @@ export async function handleUsenetInfo(bot, chatId, usenetId, userId) {
     const api = createApiClient(apiKey);
     const data = await api.getUsenetList(true);
     const items = data?.data || [];
-    const u = items.find((x) => String(x.id) === String(usenetId));
+    const u = items.find((x) => String(x.id) === String(usenetId) || (x.hash && String(x.hash) === String(usenetId)));
     if (!u) { await bot.sendMessage(chatId, '❌ Usenet download not found.'); return; }
 
-    const status = u.download_state || u.status || 'unknown';
-    const pct = u.progress != null ? u.progress * 100 : 0;
-    const isReady = pct >= 100 || status.toLowerCase().includes('complete');
+    const stateInfo = getDownloadStateInfo(u);
+    const rawPct = u.progress != null ? u.progress : 0;
+    const pct = rawPct > 1 ? rawPct : rawPct * 100;
+    const isReady = stateInfo.isReady;
 
     let text = `📰 <b>${escapeHtml(u.name)}</b>\n\n`;
     text += `🆔 ID: <code>${u.id}</code>\n`;
-    text += `${statusEmoji(status)} Status: <code>${escapeHtml(status)}</code>\n`;
+    text += `${statusEmoji(stateInfo.status)} Status: <code>${escapeHtml(stateInfo.status)}</code>\n`;
     text += `📦 Size: <code>${escapeHtml(formatBytes(u.size))}</code>\n`;
     text += `<code>${progressBar(pct)}</code>\n`;
     if (u.download_speed) text += `⬇ Speed: <code>${escapeHtml(formatSpeed(u.download_speed))}</code>\n`;
@@ -95,7 +101,7 @@ export async function handleUsenetInfo(bot, chatId, usenetId, userId) {
       inline_keyboard: [
         [{ text: '⏸ Pause', callback_data: `usenet_ctrl:${u.id}:pause` }, { text: '▶ Resume', callback_data: `usenet_ctrl:${u.id}:resume` }],
         ...(isReady ? [
-          [{ text: '🔗 Get Link (private)', callback_data: `usenet_dl:${u.id}:zip` }],
+          [{ text: '🔗 Get Link (private)', callback_data: `getlink:usenet:${u.id}` }],
           [{ text: '📤 Upload to Gofile.io ⚡', callback_data: `gofile:usenet:${u.id}` }],
         ] : []),
         [{ text: '🗑 Delete', callback_data: `usenet_del:${u.id}:confirm` }, { text: '🔙 Back', callback_data: 'usenet_list:0' }],
@@ -155,15 +161,25 @@ export async function handleUsenetDl(bot, chatId, usenetId, fileIdOrZip, userId)
 
   try {
     const api = createApiClient(apiKey);
-    const result = await api.requestUsenetDl(Number(usenetId), fileId ? Number(fileId) : null, isZip);
-    const link = result?.data;
+    let result = await api.requestUsenetDl(Number(usenetId), fileId ? Number(fileId) : null, isZip);
+    let link = extractDownloadUrl(result);
+
+    // Fallback attempt: if zip was requested but not available or vice versa
+    if (!link && isZip) {
+      result = await api.requestUsenetDl(Number(usenetId), null, false).catch(() => null);
+      link = extractDownloadUrl(result);
+    } else if (!link && !isZip) {
+      result = await api.requestUsenetDl(Number(usenetId), null, true).catch(() => null);
+      link = extractDownloadUrl(result);
+    }
+
     if (link && typeof link === 'string') {
       await bot.editMessageText(
-        `🔗 <b>Your Download Link</b>\n\n⚠️ <i>For your eyes only — do not share.</i>\n\n${escapeHtml(link)}\n\n🕐 <i>Expires in ~1 hour</i>`,
+        `🔗 <b>Your Usenet Download Link</b>\n\n⚠️ <i>For your eyes only — do not share.</i>\n\n${escapeHtml(link)}\n\n🕐 <i>Expires in ~1 hour</i>`,
         { chat_id: targetChat, message_id: loading.message_id, parse_mode: 'HTML' }
       );
     } else {
-      await bot.editMessageText(`❌ ${escapeHtml(result?.detail || 'Could not generate link.')}`,
+      await bot.editMessageText(`❌ ${escapeHtml(result?.detail || result?.error || 'Could not generate link.')}`,
         { chat_id: targetChat, message_id: loading.message_id, parse_mode: 'HTML' });
     }
   } catch (err) {
@@ -181,23 +197,68 @@ export async function handleAddNzbLink(bot, chatId, url, userId) {
     const result = await api.createUsenet({ url });
     const ok = result?.success;
     const name = result?.data?.name || url;
-    const usenetId = result?.data?.usenet_id || result?.data?.id || result?.usenet_id || result?.id;
-    if (ok && usenetId) trackDownload(userId, usenetId, 'usenet', name);
-    
+    let usenetId = result?.data?.usenet_id || result?.data?.id || result?.usenet_id || result?.id || result?.data?.hash;
+
+    // Check recent list to resolve numeric ID and instant cached status
+    let uItem = null;
+    if (ok) {
+      try {
+        const uListRes = await api.getUsenetList(true);
+        const list = uListRes?.data || [];
+        if (list.length) {
+          uItem = list.find((x) =>
+            (usenetId && String(x.id) === String(usenetId)) ||
+            (x.hash && (String(x.hash) === String(usenetId) || String(x.hash) === String(result?.data?.hash))) ||
+            (x.name && (x.name === name || x.name === result?.data?.name))
+          ) || list[0];
+          if (uItem?.id) usenetId = uItem.id;
+        }
+      } catch (_) {}
+    }
+
+    const cleanName = resolveCleanDownloadName(uItem, result?.data?.name || url);
+    if (ok && usenetId) {
+      trackDownload(userId, usenetId, 'usenet', cleanName);
+    }
+
+    const stateInfo = getDownloadStateInfo(uItem);
+    if (stateInfo.isReady && usenetId) {
+      await updateDownloadStatus(userId, usenetId, 'usenet', 'completed', true, cleanName).catch(() => {});
+      const replyMarkup = {
+        inline_keyboard: [
+          [
+            { text: '🔗 Get Link', callback_data: `getlink:usenet:${usenetId}` },
+            { text: '📋 View Details', callback_data: `usenet_info:${usenetId}` },
+          ],
+          [{ text: '📤 Upload to Gofile.io ⚡', callback_data: `gofile:usenet:${usenetId}` }],
+        ],
+      };
+      await bot.editMessageText(
+        `⚡ <b>Usenet Download Ready! (Instant/Cached)</b>\n\n` +
+        `📰 <b>Name:</b> ${escapeHtml(truncate(cleanName, 40))}\n` +
+        `🆔 <b>Usenet ID:</b> <code>${usenetId}</code>\n\n` +
+        `🎉 <i>Content is ready on TorBox! Tap below to get your private download link.</i>`,
+        { chat_id: chatId, message_id: loading.message_id, parse_mode: 'HTML', reply_markup: replyMarkup }
+      );
+      return;
+    }
+
     const replyMarkup = (ok && usenetId) ? {
-      inline_keyboard: [[
-        { text: '📋 View Details', callback_data: `usenet_info:${usenetId}` },
-        { text: '🔗 Get Link', callback_data: `getlink:usenet:${usenetId}` }
-      ]]
+      inline_keyboard: [
+        [
+          { text: '📋 View Details', callback_data: `usenet_info:${usenetId}` },
+          { text: '🔗 Get Link', callback_data: `getlink:usenet:${usenetId}` },
+        ],
+      ],
     } : undefined;
 
     await bot.editMessageText(
       ok
         ? `✅ <b>Usenet Download Added!</b>\n\n` +
           `📰 <b>Name:</b> ${escapeHtml(truncate(name, 40))}\n` +
-          `🆔 <b>Usenet ID:</b> <code>${usenetId || 'N/A'}</code>\n\n` +
-          `🔄 <i>I will monitor this and auto-notify you when it's ready.</i>`
-        : `❌ ${escapeHtml(result?.detail || 'Failed.')}`,
+          `🆔 <b>Usenet ID:</b> <code>${usenetId || 'Tracking…'}</code>\n\n` +
+          `🔄 <i>I will monitor this and auto-notify you privately as soon as it's ready.</i>`
+        : `❌ ${escapeHtml(result?.detail || result?.error || 'Failed to add Usenet download.')}`,
       { chat_id: chatId, message_id: loading.message_id, parse_mode: 'HTML', reply_markup: replyMarkup }
     );
   } catch (err) {
@@ -215,23 +276,69 @@ export async function handleAddNzbFile(bot, chatId, fileBuffer, fileName, userId
     const result = await api.createUsenet({ file: { data: fileBuffer, name: fileName } });
     const ok = result?.success;
     const name = result?.data?.name || fileName;
-    const usenetId = result?.data?.usenet_id || result?.data?.id || result?.usenet_id || result?.id;
-    if (ok && usenetId) trackDownload(userId, usenetId, 'usenet', name);
+    let usenetId = result?.data?.usenet_id || result?.data?.id || result?.usenet_id || result?.id || result?.data?.hash;
+
+    // Check recent list to resolve numeric ID and instant cached status
+    let uItem = null;
+    if (ok) {
+      try {
+        const uListRes = await api.getUsenetList(true);
+        const list = uListRes?.data || [];
+        if (list.length) {
+          uItem = list.find((x) =>
+            (usenetId && String(x.id) === String(usenetId)) ||
+            (x.hash && (String(x.hash) === String(usenetId) || String(x.hash) === String(result?.data?.hash))) ||
+            (x.name && (x.name === name || x.name === fileName))
+          ) || list[0];
+          if (uItem?.id) usenetId = uItem.id;
+        }
+      } catch (_) {}
+    }
+
+    const cleanFileName = fileName ? String(fileName).replace(/\.nzb$/i, '') : 'Usenet Download';
+    const cleanName = resolveCleanDownloadName(uItem, result?.data?.name || cleanFileName);
+    if (ok && usenetId) {
+      trackDownload(userId, usenetId, 'usenet', cleanName);
+    }
+
+    const stateInfo = getDownloadStateInfo(uItem);
+    if (stateInfo.isReady && usenetId) {
+      await updateDownloadStatus(userId, usenetId, 'usenet', 'completed', true, cleanName).catch(() => {});
+      const replyMarkup = {
+        inline_keyboard: [
+          [
+            { text: '🔗 Get Link', callback_data: `getlink:usenet:${usenetId}` },
+            { text: '📋 View Details', callback_data: `usenet_info:${usenetId}` },
+          ],
+          [{ text: '📤 Upload to Gofile.io ⚡', callback_data: `gofile:usenet:${usenetId}` }],
+        ],
+      };
+      await bot.editMessageText(
+        `⚡ <b>NZB File Download Ready! (Instant/Cached)</b>\n\n` +
+        `📰 <b>Name:</b> ${escapeHtml(truncate(cleanName, 40))}\n` +
+        `🆔 <b>Usenet ID:</b> <code>${usenetId}</code>\n\n` +
+        `🎉 <i>Content is ready on TorBox! Tap below to get your private download link.</i>`,
+        { chat_id: chatId, message_id: loading.message_id, parse_mode: 'HTML', reply_markup: replyMarkup }
+      );
+      return;
+    }
 
     const replyMarkup = (ok && usenetId) ? {
-      inline_keyboard: [[
-        { text: '📋 View Details', callback_data: `usenet_info:${usenetId}` },
-        { text: '🔗 Get Link', callback_data: `getlink:usenet:${usenetId}` }
-      ]]
+      inline_keyboard: [
+        [
+          { text: '📋 View Details', callback_data: `usenet_info:${usenetId}` },
+          { text: '🔗 Get Link', callback_data: `getlink:usenet:${usenetId}` },
+        ],
+      ],
     } : undefined;
 
     await bot.editMessageText(
       ok
         ? `✅ <b>NZB File Uploaded!</b>\n\n` +
-          `📰 <b>Name:</b> ${escapeHtml(truncate(name, 40))}\n` +
-          `🆔 <b>Usenet ID:</b> <code>${usenetId || 'N/A'}</code>\n\n` +
-          `🔄 <i>I will monitor this and auto-notify you when it's ready.</i>`
-        : `❌ ${escapeHtml(result?.detail || 'Failed.')}`,
+          `📰 <b>Name:</b> ${escapeHtml(truncate(cleanName, 40))}\n` +
+          `🆔 <b>Usenet ID:</b> <code>${usenetId || 'Tracking…'}</code>\n\n` +
+          `🔄 <i>I will monitor this and auto-notify you privately as soon as it's ready.</i>`
+        : `❌ ${escapeHtml(result?.detail || result?.error || 'Failed to upload NZB file.')}`,
       { chat_id: chatId, message_id: loading.message_id, parse_mode: 'HTML', reply_markup: replyMarkup }
     );
   } catch (err) {

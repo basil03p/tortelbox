@@ -2,13 +2,14 @@
 // Handlers: Web Downloads — Essential+ only, private DL links + HTML formatting
 // ============================================================
 import { createApiClient } from '../api.js';
-import { getUserApiKey, getCachedPlan, checkPlanFeature, getPrivateChatId } from '../session.js';
-import { trackDownload, getUserTrackedItemIds, isItemOwnedByUser, updateDownloadStatus } from '../db.js';
+import { getUserApiKey, getCachedPlan, checkPlanFeature, getPrivateChatId, hasPersonalApiKey } from '../session.js';
+import { trackDownload, getUserTrackedItemIds, isItemOwnedByUser, updateDownloadStatus, deleteTrackedDownload } from '../db.js';
 import { handleGetLink } from '../index.js';
 import {
   formatBytes, formatSpeed, formatEta, formatDate,
   statusEmoji, progressBar, truncate, escapeHtml, extractApiError,
-  paginate, paginationKeyboard,
+  paginate, paginationKeyboard, extractDownloadUrl,
+  resolveCleanDownloadName,
 } from '../utils.js';
 
 const PAGE_SIZE = parseInt(process.env.PAGE_SIZE || '5', 10);
@@ -31,14 +32,13 @@ export async function handleWebDlList(bot, msg, page = 0) {
     const api = createApiClient(apiKey);
     const data = await api.getWebDlList();
     const userItemIds = await getUserTrackedItemIds(userId, 'webdl');
-    const adminId = process.env.BOT_ADMIN_ID ? String(process.env.BOT_ADMIN_ID).trim() : null;
-    const isUserAdmin = adminId && String(userId) === adminId;
 
     const allItems = data?.data || [];
-    const items = allItems.filter((w) => isUserAdmin || userItemIds.has(String(w.id)));
+    // STRICT: Only show web downloads tracked for this user in MongoDB/SQLite database
+    const items = allItems.filter((w) => userItemIds.has(String(w.id)));
 
     if (!items.length) {
-      await bot.editMessageText('📭 No web downloads found for your account.\n\nUse /addwebdl <url> to add a link.', { chat_id: chatId, message_id: loading.message_id });
+      await bot.editMessageText('📭 No tracked web downloads found for your account.\n\nUse /addwebdl <url> to add a link.', { chat_id: chatId, message_id: loading.message_id });
       return;
     }
 
@@ -49,13 +49,14 @@ export async function handleWebDlList(bot, msg, page = 0) {
     for (const w of pageItems) {
       const status = w.download_state || w.status || 'unknown';
       const pct = w.progress != null ? w.progress * 100 : 0;
-      const name = truncate(w.name, 35);
+      const cleanName = resolveCleanDownloadName(w, w.name);
+      const name = truncate(cleanName, 35);
       text += `${statusEmoji(status)} <b>${escapeHtml(name)}</b>\n`;
       text += `  🆔 <code>${w.id}</code> | ${escapeHtml(status)} | ${escapeHtml(formatBytes(w.size))}\n`;
       text += `  <code>${progressBar(pct)}</code>\n`;
       if (w.download_speed) text += `  ⬇ ${escapeHtml(formatSpeed(w.download_speed))}\n`;
       text += '\n';
-      rowBtns.push([{ text: `📋 ${truncate(w.name, 20)}`, callback_data: `webdl_info:${w.id}` }]);
+      rowBtns.push([{ text: `📋 ${truncate(cleanName, 20)}`, callback_data: `webdl_info:${w.id}` }]);
     }
 
     const keyboard = paginationKeyboard('webdl_list', p, totalPages);
@@ -133,6 +134,9 @@ export async function handleWebDlDelete(bot, chatId, webdlId, userId) {
     const api = createApiClient(apiKey);
     const result = await api.controlWebDl(Number(webdlId), 'delete');
     const ok = result?.success;
+    if (ok) {
+      await deleteTrackedDownload(userId, webdlId, 'webdl').catch(() => {});
+    }
     await bot.editMessageText(`${ok ? '✅ Deleted.' : `❌ ${escapeHtml(result?.detail || 'Failed.')}`}`,
       { chat_id: chatId, message_id: loading.message_id, parse_mode: 'HTML' });
   } catch (err) {
@@ -157,7 +161,7 @@ export async function handleWebDlDl(bot, chatId, webdlId, fileIdOrZip, userId) {
   try {
     const api = createApiClient(apiKey);
     const result = await api.requestWebDlDl(Number(webdlId), fileId ? Number(fileId) : null, isZip);
-    const link = result?.data;
+    const link = extractDownloadUrl(result);
     if (link && typeof link === 'string') {
       await bot.editMessageText(
         `🔗 <b>Your Download Link</b>\n\n⚠️ <i>For your eyes only — do not share.</i>\n\n${escapeHtml(link)}\n\n🕐 <i>Expires in ~1 hour</i>`,
@@ -181,17 +185,22 @@ export async function handleAddWebDl(bot, chatId, url, userId) {
     const api = createApiClient(apiKey);
     const result = await api.createWebDl({ url });
     const ok = result?.success;
-    const name = result?.data?.name || url;
     const webdlId = result?.data?.webdl_id || result?.data?.id || result?.web_id || result?.id;
-    if (ok && webdlId) trackDownload(userId, webdlId, 'webdl', name);
 
+    let wItem = null;
     if (ok && webdlId) {
       const listData = await api.getWebDlList(true).catch(() => null);
-      const wItem = Array.isArray(listData?.data) ? listData.data.find(x => String(x.id) === String(webdlId)) : result?.data;
+      wItem = Array.isArray(listData?.data) ? listData.data.find(x => String(x.id) === String(webdlId)) : result?.data;
+    }
+
+    const cleanName = resolveCleanDownloadName(wItem, result?.data?.name || url);
+    if (ok && webdlId) trackDownload(userId, webdlId, 'webdl', cleanName);
+
+    if (ok && webdlId) {
       const isReady = wItem?.download_finished || wItem?.cached || wItem?.progress >= 1 || (wItem?.download_state && String(wItem.download_state).toLowerCase().includes('complete'));
 
       if (isReady) {
-        await updateDownloadStatus(userId, webdlId, 'webdl', 'completed', true, name).catch(() => {});
+        await updateDownloadStatus(userId, webdlId, 'webdl', 'completed', true, cleanName).catch(() => {});
         const replyMarkup = {
           inline_keyboard: [[
             { text: '📋 View Details', callback_data: `webdl_info:${webdlId}` },
@@ -200,7 +209,7 @@ export async function handleAddWebDl(bot, chatId, url, userId) {
         };
         await bot.editMessageText(
           `⚡ <b>Web Download Ready! (Cached)</b>\n\n` +
-          `🌐 <b>Name:</b> ${escapeHtml(truncate(name, 40))}\n` +
+          `🌐 <b>Name:</b> ${escapeHtml(truncate(cleanName, 40))}\n` +
           `🆔 <b>WebDL ID:</b> <code>${webdlId}</code>\n\n` +
           `🎉 <i>Instant download ready! Generating your link…</i>`,
           { chat_id: chatId, message_id: loading.message_id, parse_mode: 'HTML', reply_markup: replyMarkup }

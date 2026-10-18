@@ -5,10 +5,10 @@
 
 // Re-export everything from db.js so existing code still works
 export {
-  isUserAllowed, addAllowedUser, removeAllowedUser, listAllowedUsers, isOpenAccess,
-  getUserApiKey, setUserApiKey, removeUserApiKey, hasApiKey,
+  isUserAllowed, isUserAllowedMain, addAllowedUser, removeAllowedUser, listAllowedUsers, isOpenAccess,
+  getUserApiKey, getMainApiKey, setUserApiKey, removeUserApiKey, hasApiKey, hasPersonalApiKey,
   setCachedPlan, getCachedPlan,
-  setPrivateChatId, getPrivateChatId,
+  setPrivateChatId, getPrivateChatId, updateTrackedItemId,
 } from './db.js';
 
 // ── Plan feature gate ─────────────────────────────────────────

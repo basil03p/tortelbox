@@ -2,7 +2,8 @@
 // Handlers: User Account, Stats, API key — HTML formatted
 // ============================================================
 import { createApiClient } from '../api.js';
-import { getUserApiKey, setUserApiKey, setCachedPlan, getCachedPlan } from '../session.js';
+import { getUserApiKey, setUserApiKey, setCachedPlan, getCachedPlan, hasPersonalApiKey, setPrivateChatId, sessions } from '../session.js';
+import { upsertUser } from '../db.js';
 import { formatBytes, formatDate, escapeHtml } from '../utils.js';
 
 const PLAN_NAMES = { 0: '🆓 Free', 1: '🥈 Essential', 2: '🥇 Pro', 3: '💎 Ultimate' };
@@ -31,18 +32,25 @@ export async function handleMe(bot, msg) {
 
     if (u.plan != null) setCachedPlan(userId, u.plan);
 
+    const hasOwnKey = hasPersonalApiKey(userId);
+    const isUserAdmin = process.env.BOT_ADMIN_ID && String(userId) === String(process.env.BOT_ADMIN_ID).trim();
+    const canSeeAccountDetails = isUserAdmin || hasOwnKey;
     const plan = u.plan ?? null;
     const planLabel = PLAN_NAMES[plan] || `Plan ${plan}`;
     const limits = PLAN_LIMITS[plan] || '';
 
-    let text = `👤 <b>Your TorBox Account</b>\n\n`;
-    text += `📧 Email: <code>${escapeHtml(u.email || '—')}</code>\n`;
-    text += `🆔 Auth ID: <code>${escapeHtml(u.auth_id || '—')}</code>\n`;
+    let text = `👤 <b>TorBox Profile</b>\n\n`;
+    if (canSeeAccountDetails) {
+      text += `📧 Email: <code>${escapeHtml(u.email || '—')}</code>\n`;
+      text += `🆔 Auth ID: <code>${escapeHtml(u.auth_id || '—')}</code>\n`;
+    } else {
+      text += `🤖 Mode: <i>Shared Bot Account</i>\n`;
+    }
     text += `🏷 Plan: <b>${escapeHtml(planLabel)}</b>\n`;
-    text += `📋 Subscription: ${u.is_subscribed ? '✅ Active' : '❌ Inactive'}\n`;
+    text += `📋 Status: ${u.is_subscribed ? '✅ Active' : '❌ Inactive'}\n`;
     if (limits) text += `🎛 Limits: ${escapeHtml(limits)}\n`;
-    if (u.expiration) text += `⏰ Expires: <code>${escapeHtml(formatDate(u.expiration))}</code>\n`;
-    if (u.total_downloaded != null) text += `⬇ Downloaded: <code>${escapeHtml(formatBytes(u.total_downloaded))}</code>\n`;
+    if (canSeeAccountDetails && u.expiration) text += `⏰ Expires: <code>${escapeHtml(formatDate(u.expiration))}</code>\n`;
+    if (canSeeAccountDetails && u.total_downloaded != null) text += `⬇ Total Downloaded: <code>${escapeHtml(formatBytes(u.total_downloaded))}</code>\n`;
     if (u.created_at) text += `📅 Member since: <code>${escapeHtml(formatDate(u.created_at))}</code>\n`;
 
     text += `\n<b>🔓 Your plan includes:</b>\n`;
@@ -201,6 +209,12 @@ export async function handleSetKey(bot, msg, newKey) {
   const userId = msg.from?.id || msg.chat.id;
   const chatId = msg.chat.id;
 
+  if (msg.chat?.type === 'private' && userId) {
+    upsertUser(userId, { username: msg.from?.username, firstName: msg.from?.first_name });
+    setPrivateChatId(userId, chatId);
+  }
+  sessions.delete(userId);
+
   if (!newKey || newKey.trim().length < 10) {
     await bot.sendMessage(chatId, '❌ Invalid API key. Usage: <code>/setkey YOUR_API_KEY</code>', { parse_mode: 'HTML' });
     return;
@@ -211,10 +225,10 @@ export async function handleSetKey(bot, msg, newKey) {
     const api = createApiClient(newKey.trim());
     const result = await api.getMe();
     if (result?.success) {
-      setUserApiKey(userId, newKey.trim());
       const u = result?.data;
-      if (u?.plan != null) setCachedPlan(userId, u.plan);
       const plan = u?.plan ?? null;
+      setUserApiKey(userId, newKey.trim(), plan);
+      if (plan != null) setCachedPlan(userId, plan);
       const planLabel = PLAN_NAMES[plan] || `Plan ${plan}`;
       const email = u?.email || '—';
       await bot.editMessageText(

@@ -106,19 +106,32 @@ export function createApiClient(apiKey) {
     },
 
     // ── Usenet ───────────────────────────────────────────────
-    async getUsenetList(bypassCache = false) {
+    async getUsenetList(bypassCache = false, id = null) {
+      const params = { bypass_cache: bypassCache };
+      if (id !== null && id !== undefined) params.id = id;
+      const r = await client.get('/api/usenet/mylist', { params });
+      return r.data;
+    },
+
+    async getUsenetById(id) {
       const r = await client.get('/api/usenet/mylist', {
-        params: { bypass_cache: bypassCache },
+        params: { id, bypass_cache: true },
       });
       return r.data;
     },
 
-    async createUsenet({ file, url, name = '' }) {
+    async createUsenet({ file, url, name = '', postProcessing = -1 }) {
       const FormData = (await import('form-data')).default;
       const form = new FormData();
-      if (file) form.append('file', file.data, { filename: file.name, contentType: 'application/x-nzb' });
-      if (url) form.append('link', url);
+      if (file) form.append('file', file.data, { filename: file.name || 'download.nzb', contentType: 'application/x-nzb' });
+      if (url) {
+        form.append('link', url);
+        form.append('url', url);
+      }
       if (name) form.append('name', name);
+      if (postProcessing !== null && postProcessing !== undefined) {
+        form.append('post_processing', String(postProcessing));
+      }
 
       const r = await client.post('/api/usenet/createusenetdownload', form, {
         headers: form.getHeaders(),
@@ -135,13 +148,12 @@ export function createApiClient(apiKey) {
       return r.data;
     },
 
-    // FIX: token = apiKey, usenet_id = the actual ID
-    async requestUsenetDl(usenetId, fileId = null, zipLink = true) {
+    async requestUsenetDl(usenetId, fileId = null, zipLink = false) {
       const params = {
         token: apiKey,
         usenet_id: usenetId,
-        zip_link: zipLink ? 'true' : 'false',
       };
+      if (zipLink) params.zip_link = 'true';
       if (fileId !== null && fileId !== undefined) params.file_id = fileId;
       const r = await client.get('/api/usenet/requestdl', { params });
       return r.data;
@@ -251,7 +263,21 @@ export function extractHashFromMagnet(magnet) {
   return match ? match[1].toUpperCase() : null;
 }
 
+/** Extract display name (&dn=) from magnet URI */
+export function extractNameFromMagnet(magnet) {
+  if (!magnet || typeof magnet !== 'string') return null;
+  try {
+    const match = magnet.match(/[?&]dn=([^&]+)/i);
+    if (match && match[1]) {
+      const decoded = decodeURIComponent(match[1].replace(/\+/g, ' ')).trim();
+      return decoded || null;
+    }
+  } catch (_) {}
+  return null;
+}
+
 /** Is this string a raw infohash (40 hex or 32 base32)? */
 export function isInfohash(str) {
   return /^[a-fA-F0-9]{40}$/.test(str) || /^[a-zA-Z2-7]{32}$/.test(str);
 }
+
